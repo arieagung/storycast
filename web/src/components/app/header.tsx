@@ -1,7 +1,8 @@
-import { KeyRound, X } from "lucide-react";
+import { FolderOpen } from "lucide-react";
 import { SharedLayoutBg } from "@/components/motion/shared-layout-bg";
 import { ThemeToggle } from "@/components/motion/theme-toggle";
 import { Link, usePath } from "@/lib/router";
+import { useFolder } from "@/lib/studio/assets";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -10,28 +11,28 @@ const NAV = [
   { to: "/films", label: "Explore" },
 ];
 
-type KeyProps = { hasKey?: boolean; onKey?: () => void; onDisconnect?: () => void };
-
-function KeyButton({ hasKey, onKey, onDisconnect }: KeyProps) {
-  if (!hasKey)
-    return (
-      <button type="button" onClick={onKey} className="ml-1 inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-foreground px-3.5 text-sm font-medium text-background transition-opacity hover:opacity-90 sm:ml-2">
-        <KeyRound className="size-3.5" /> <span className="hidden sm:inline">Connect fal key</span>
-        <span className="sm:hidden">Key</span>
-      </button>
-    );
+/** Shows whether a working folder is bound, because everything you make lands there. */
+function FolderButton({ onFolder }: { onFolder?: () => void }) {
+  const { state, name } = useFolder();
+  const ok = state === "ok";
   return (
-    <span className="ml-1 inline-flex h-10 shrink-0 items-center gap-1 rounded-full border border-border pr-1 pl-3 text-sm text-muted-foreground sm:ml-2">
-      <span className="size-1.5 rounded-full bg-success" />
-      <span className="hidden sm:inline">fal key</span>
-      <button type="button" onClick={onDisconnect} title="Remove the key from this browser" aria-label="Remove the fal key" className="grid size-8 place-items-center rounded-full hover:bg-muted hover:text-foreground">
-        <X className="size-3.5" />
-      </button>
-    </span>
+    <button
+      type="button"
+      onClick={onFolder}
+      title={ok ? `Working folder: ${name}` : "Choose a working folder on the Create page"}
+      className={cn(
+        "ml-1 inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm transition-colors sm:ml-2",
+        ok ? "border-border text-muted-foreground hover:text-foreground" : "border-transparent bg-foreground font-medium text-background hover:opacity-90",
+      )}
+    >
+      {ok ? <span className="size-1.5 rounded-full bg-success" /> : <FolderOpen className="size-3.5" />}
+      <span className="hidden max-w-32 truncate sm:inline">{ok ? name : "Choose folder"}</span>
+      <span className="sm:hidden">{ok ? "Folder" : "Folder"}</span>
+    </button>
   );
 }
 
-export function Header({ hasKey, onKey, onDisconnect }: KeyProps) {
+export function Header({ onFolder }: { onFolder?: () => void }) {
   const path = usePath();
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/70 backdrop-blur-xl">
@@ -56,7 +57,7 @@ export function Header({ hasKey, onKey, onDisconnect }: KeyProps) {
               </Link>
             ))}
           </SharedLayoutBg>
-          <KeyButton hasKey={hasKey} onKey={onKey} onDisconnect={onDisconnect} />
+          <FolderButton onFolder={onFolder} />
           <ThemeToggle
             variant="circle-blur"
             className="ml-1 size-10 shrink-0 rounded-full border border-border text-muted-foreground transition-colors hover:text-foreground sm:ml-2"

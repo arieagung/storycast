@@ -1,6 +1,8 @@
 import { Languages, Play } from "lucide-react";
 import { useState } from "react";
+import { Art } from "@/components/app/lightbox";
 import { navigate } from "@/lib/router";
+import { useMediaUrl } from "@/lib/studio/assets";
 import { cn } from "@/lib/utils";
 import { languageName, nativeLanguage, type Film } from "@/lib/api";
 
@@ -13,6 +15,7 @@ export function FilmCard({ film, layout = "grid" }: { film: Film; layout?: "grid
   const [hover, setHover] = useState(false);
   const list = layout === "list";
   const to = `/films/${film.id}`;
+  const preview = useMediaUrl(hover ? film.video : undefined);
   return (
     <a
       href={to}
@@ -27,9 +30,9 @@ export function FilmCard({ film, layout = "grid" }: { film: Film; layout?: "grid
     >
       <div className={cn("relative aspect-video shrink-0 overflow-hidden rounded-2xl bg-muted ring-1 ring-border transition-shadow group-hover:shadow-xl", list ? "w-44 rounded-xl sm:w-56" : "w-full")}>
         {(film.thumb || film.poster) && (
-          <img src={film.thumb || film.poster!} alt="" loading="lazy" className="absolute inset-0 size-full object-cover transition-transform duration-500 group-hover:scale-[1.03]" />
+          <Art src={film.thumb || film.poster!} loading="lazy" className="absolute inset-0 size-full object-cover transition-transform duration-500 group-hover:scale-[1.03]" />
         )}
-        {hover && <video src={film.video} muted autoPlay loop playsInline preload="none" className="absolute inset-0 size-full object-cover" />}
+        {hover && preview && <video src={preview} muted autoPlay loop playsInline preload="none" className="absolute inset-0 size-full object-cover" />}
         <span className="absolute top-2 left-2 inline-flex items-center gap-1 rounded-full bg-black/65 px-2 py-0.5 text-[11px] font-medium text-white backdrop-blur-sm">
           <Languages className="size-3" /> {nativeLanguage(film.lang)}
         </span>

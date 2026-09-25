@@ -6,16 +6,12 @@
 
 <p align="center">
   <b>Type a topic. Get a story.</b><br />
-  Pick a character, give it a topic, and get back a narrated animated film, made end to end on <a href="https://fal.ai">fal</a>.
+  Pick a character, give it a topic, and Storycast works out every prompt, every reference and every cut of a narrated
+  animated film. You run the models.
 </p>
 
 <p align="center">
-  <a href="https://storycast-fawn.vercel.app"><b>Open Storycast</b></a> ·
-  <a href=".github/assets/launch.mp4">Watch the launch video</a>
-</p>
-
-<p align="center">
-  <a href="https://storycast-fawn.vercel.app"><img src=".github/assets/home.jpg" alt="Storycast home" /></a>
+  <img src=".github/assets/home.jpg" alt="Storycast home" />
 </p>
 
 ## What it makes
@@ -26,69 +22,124 @@ a score, a hand-lettered end card and word-by-word subtitles. 50 ready narrators
 
 <table>
   <tr>
-    <td width="33%"><a href="https://storycast-fawn.vercel.app/films/10a4f1dd"><img src="web/public/static/posters/10a4f1dd.jpg" alt="Nib and the stick inside the pencil" /></a><br /><sub><b>Nib</b> and the stick inside the pencil · Claymation</sub></td>
-    <td width="33%"><a href="https://storycast-fawn.vercel.app/films/18d77a9d"><img src="web/public/static/posters/18d77a9d.jpg" alt="Kiko and the secret life of lightning" /></a><br /><sub><b>Kiko</b> and the secret life of lightning · Watercolor anime</sub></td>
-    <td width="33%"><a href="https://storycast-fawn.vercel.app/films/2bf0760f"><img src="web/public/static/posters/2bf0760f.jpg" alt="Stella and the very first newspapers" /></a><br /><sub><b>Stella</b> and the very first newspapers · Comic ligne claire</sub></td>
-  </tr>
-  <tr>
-    <td width="33%"><a href="https://storycast-fawn.vercel.app/films/0067bf73"><img src="web/public/static/posters/0067bf73.jpg" alt="Rex and the bone that turned to stone" /></a><br /><sub><b>Rex</b> and the bone that turned to stone · Kid's crayon</sub></td>
-    <td width="33%"><a href="https://storycast-fawn.vercel.app/films/19def244"><img src="web/public/static/posters/19def244.jpg" alt="Rio y el tango del puerto" /></a><br /><sub><b>Rio</b> y el tango del puerto · Marker sketch · Español</sub></td>
-    <td width="33%"><a href="https://storycast-fawn.vercel.app/films/1b1d5e2e"><img src="web/public/static/posters/1b1d5e2e.jpg" alt="Wren ve yerin altındaki gizli şehirler" /></a><br /><sub><b>Wren</b> ve yerin altındaki gizli şehirler · Gouache storybook · Türkçe</sub></td>
+    <td width="33%"><img src="web/public/static/posters/10a4f1dd.jpg" alt="Nib and the stick inside the pencil" /><br /><sub><b>Nib</b> and the stick inside the pencil · Claymation</sub></td>
+    <td width="33%"><img src="web/public/static/posters/18d77a9d.jpg" alt="Kiko and the secret life of lightning" /><br /><sub><b>Kiko</b> and the secret life of lightning · Watercolor anime</sub></td>
+    <td width="33%"><img src="web/public/static/posters/2bf0760f.jpg" alt="Stella and the very first newspapers" /><br /><sub><b>Stella</b> and the very first newspapers · Comic ligne claire</sub></td>
   </tr>
 </table>
-
-<p align="center">
-  <a href=".github/assets/launch.mp4"><img src=".github/assets/launch.jpg" width="720" alt="Watch the launch video" /></a><br />
-  <sub>▶ Launch video</sub>
-</p>
 
 ## How it works
 
-Everything runs in your browser with your own fal key.
+This is a manual studio. Nothing is generated for you and no API key is needed: the app is the director, the continuity
+supervisor and the editor, and it hands you one step at a time.
 
-<table>
-  <tr>
-    <td><img src=".github/assets/create.jpg" alt="Make a film" /></td>
-    <td><img src=".github/assets/watch.jpg" alt="Watch a film" /></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Pick a topic, a narrator, a look, a voice and a length</sub></td>
-    <td align="center"><sub>Watch, share or download the finished film</sub></td>
-  </tr>
-</table>
+Every step shows you:
 
-1. **Script.** A director writes the story in blocks, each either voice-over or the narrator talking on camera, and a
-   script editor smooths every jump between scenes.
-2. **Narrator and keyframes.** The narrator gets a model sheet and a hero portrait, and every block gets a keyframe in
-   the chosen look.
-3. **Voice.** Each block is narrated, and on-camera lines are fitted to the right length.
-4. **Shots.** Voice-over blocks become animated shots and on-camera blocks become lip-synced shots.
-5. **Score and edit.** A score is composed, the shots are cut to the narration, the sound is mixed, an end card is
-   lettered and subtitles are added.
+- the **fal endpoint the original pipeline called**, so you know which of your own models to reach for;
+- the **full system prompt and prompt**, verbatim, plus the non-prompt parameters (`image_size`, `duration`,
+  `resolution`, `stability`, `language_code` and the rest);
+- the **reference files in the order the prompt talks about them** — Image 1, Image 2, Image 3 — ready to download;
+- the **file name and folder** the result has to be saved under.
 
-### Models
+You take that to whichever service you use, generate the thing, and save it where the step asked. The app finds the
+file, measures it, and works out what comes next.
 
-| Step | fal endpoint |
+### The one thing that needs a click
+
+A browser may not read your disk unbidden. Choose a working folder once on the Create page and Storycast reads it from
+then on: every file you save under the name a step asked for is picked up and measured on its own, each time you come
+back to the tab. Without a folder you can still drop files onto their step and the app keeps a copy itself, which is
+easier to lose.
+
+Lengths are measured, never typed. They decide everything downstream: whether an on-camera line fits, how long a shot
+has to be, how long the score runs, where every cut falls and when each subtitle word lights up.
+
+### The steps
+
+1. **Your images.** Only when you bring your own look or your own character: a vision model describes them, and you
+   paste the JSON back. The `anchor` sentence you get is appended to every image prompt in the film.
+2. **Script.** The director writes the whole film as one JSON object. Storycast validates it, tells you where it drifted
+   from the brief, and numbers the blocks. An optional second pass smooths the jumps between scenes; skip it and the
+   script is used as written.
+3. **Character.** A model sheet and a hero portrait, the two references every later frame leans on. Skipped entirely for
+   the 50 ready narrators, which already have both.
+4. **Narration.** One recording per block. On-camera lines have to last 5.2–14.6 s; if one does not, rewrite it in place
+   and record again, or turn the block into a voice-over, which is what the original did automatically.
+5. **Keyframes.** The opening frame of every shot, one per block plus the final shot.
+6. **Shots.** Voice-over blocks become animated shots with a target length; on-camera blocks are lip-synced to their
+   recording. Each shot can be redone, and each can keep or drop its own sound in the mix.
+7. **Score.** One instrumental bed, its length worked out from the narration.
+8. **End card.** The final keyframe with the title lettered into the calm space at the top. Also the film's poster.
+9. **Edit.** No models here. Storycast writes `render.ps1`, `render.sh`, `subtitles.ass`, `subtitles.srt` and the two
+   ffmpeg filter files into the folder. Run one command; you get `film.mp4` and `clean.mp4`.
+
+### Which model each step was written for
+
+| Step | Original fal endpoint |
 | --- | --- |
 | Director, script editor | [`openrouter/router`](https://fal.ai/models/openrouter/router) with Claude Opus 5.5 |
-| Reading images, shot checks | [`openrouter/router/vision`](https://fal.ai/models/openrouter/router/vision) with Claude Opus 5.5 and Gemini 3.8 Flash |
+| Reading your images | [`openrouter/router/vision`](https://fal.ai/models/openrouter/router/vision) |
 | Model sheets, keyframes, end cards | [`openai/gpt-image-2.5/flare/text-to-image`](https://fal.ai/models/openai/gpt-image-2.5/flare/text-to-image), [`openai/gpt-image-2.5/flare/edit`](https://fal.ai/models/openai/gpt-image-2.5/flare/edit) |
 | Shots | [`minimax/h3-max/reference-to-video`](https://fal.ai/models/minimax/h3-max/reference-to-video) |
 | On-camera lines | [`minimax/h3-max/lip-sync/image-to-video`](https://fal.ai/models/minimax/h3-max/lip-sync/image-to-video) |
 | Narration | [`fal-ai/elevenlabs/tts/eleven-v3`](https://fal.ai/models/fal-ai/elevenlabs/tts/eleven-v3) |
 | Score | [`elevenlabs/music/v2.5`](https://fal.ai/models/elevenlabs/music/v2.5) |
-| Shot sound | [`fal-ai/sam-audio/separate`](https://fal.ai/models/fal-ai/sam-audio/separate) |
-| Edit | [`fal-ai/workflow-utilities/trim-video`](https://fal.ai/models/fal-ai/workflow-utilities/trim-video) and `fal-ai/ffmpeg-api` (extract-frame, merge-videos, images-to-video, compose, loudnorm, merge-audio-video) |
-| Subtitles | [`fal-ai/workflow-utilities/auto-subtitle`](https://fal.ai/models/fal-ai/workflow-utilities/auto-subtitle) |
+| Edit, mix, subtitles | was `fal-ai/ffmpeg-api` and `fal-ai/workflow-utilities`; now ffmpeg on your machine |
+
+### What the edit does differently
+
+The cut is the same arithmetic the original used, with two deliberate improvements that come free from doing it locally:
+
+- A shot that came back shorter than its slot is held on its last frame to fill it. fal's merge just made the film
+  shorter, and everything after it drifted out of sync with the narration.
+- Subtitles are written from the script and the measured narration lengths instead of being transcribed back out of the
+  finished film. The words are already known, so they are exact.
+
+Shot audio is left out of the mix by default. Video models tend to mumble, and the original needed a source-separation
+pass to strip that speech out before it could use a shot's sound. Listen to a shot and turn its sound on if it is clean.
+
+### Your folder
+
+```
+<your folder>/
+└── how-do-bees-make-honey-4f2a/
+    ├── input/        style.png, character.png        (only what you uploaded)
+    ├── character/    sheet.png, hero.png
+    ├── narration/    B01.mp3, B02.mp3, …             one per block
+    ├── keyframes/    S01.png, T02.png, …             one per shot
+    ├── shots/        S01.mp4, T02.mp4, …
+    ├── music/        score.mp3
+    ├── endcard/      card.png
+    ├── build/        cuts and the two ffmpeg filter files
+    ├── subtitles.ass, subtitles.srt
+    ├── render.ps1, render.sh
+    └── film.mp4, clean.mp4
+```
+
+Any common extension works: `png` `jpg` `jpeg` `webp` for images, `mp3` `wav` `m4a` `aac` `ogg` `flac` `opus` for
+audio, `mp4` `webm` `mov` `mkv` `m4v` for video. Only the name before the dot has to match.
+
+### Running the edit
+
+You need [ffmpeg](https://ffmpeg.org/download.html) on your PATH, built with libass for the subtitle step (the usual
+Windows and Homebrew builds are). Then, inside the film's folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\render.ps1
+```
+
+```bash
+bash render.sh
+```
+
+The script prints each step, stops on the first failure, and leaves `film.mp4` (with subtitles) and `clean.mp4`
+(without) next to itself. Drop them back onto the last step and the film page can toggle subtitles off.
 
 ### Make one with your agent
 
-Every page has a **Copy agent prompt** button. It copies a step-by-step brief of this pipeline, filled in with the
-page's topic, look, narrator and voice, so a coding agent with a fal key can make the film from your terminal.
-
-<p align="center">
-  <img src=".github/assets/explore.jpg" alt="Explore" />
-</p>
+Every page has a **Copy agent prompt** button. It copies the whole pipeline as a brief, filled in with the page's topic,
+look, narrator and voice, and naming the endpoint each step was written for, so a coding agent can make the film with
+whatever models it can reach.
 
 ## Run locally
 
@@ -96,7 +147,8 @@ page's topic, look, narrator and voice, so a coding agent with a fal key can mak
 cd web && npm install && npm run dev
 ```
 
-Connect your fal key in the app to make stories.
+Choose a working folder in the app and start a film. Edge and Chrome can bind a folder; other browsers fall back to
+dropping files onto each step.
 
 ## Deploy
 
@@ -104,7 +156,9 @@ Connect your fal key in the app to make stories.
 
 ### Sharing (optional)
 
-`share/` is a Cloudflare Worker with D1 and R2. Without it, sharing is hidden.
+`share/` is a Cloudflare Worker with D1 and R2. Without it, sharing is hidden, and the Explore gallery shows only the
+films that ship with the app. It can publish films whose media is already on the web; films that live in your own folder
+cannot be shared, because there is no URL to hand it.
 
 ```bash
 cd share && npm install && npx wrangler login
@@ -119,11 +173,11 @@ Put the database id and your site's address (`ALLOWED_ORIGINS`) into `share/wran
 ```bash
 npx wrangler secret put IP_SALT
 npx wrangler secret put TURNSTILE_SECRET
-npx wrangler secret put FAL_KEY
 npx wrangler deploy
 ```
 
-Set `VITE_SHARE_API` and `VITE_TURNSTILE_SITE_KEY` for the site build (see `web/.env.example`) and redeploy.
+Set `VITE_SHARE_API` and `VITE_TURNSTILE_SITE_KEY` for the site build (see `web/.env.example`) and redeploy. The worker
+also serves the voice library, which is how the app can offer more than the twelve voices in its own catalog.
 
 To publish a story sent to Explore:
 

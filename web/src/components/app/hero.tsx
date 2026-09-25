@@ -6,6 +6,7 @@ import { Link, navigate } from "@/lib/router";
 import { Marquee } from "@/components/motion/marquee";
 import { TextReveal } from "@/components/motion/text-reveal";
 import { AgentPromptButton } from "@/components/app/agent-button";
+import { Art } from "@/components/app/lightbox";
 import { EASE_OUT } from "@/lib/ease";
 import type { CastMember, Film } from "@/lib/api";
 
@@ -38,7 +39,7 @@ function PosterWall({ films }: { films: Film[] }) {
               aria-label={f.title}
               className="group/poster relative block aspect-video w-44 overflow-hidden rounded-xl border border-border bg-card shadow-lg shadow-black/20 sm:w-64 lg:w-72"
             >
-              <img
+              <Art
                 src={f.thumb || f.poster!}
                 alt=""
                 loading="lazy"

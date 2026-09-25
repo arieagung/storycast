@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
-import { Clapperboard, ImagePlus, Lightbulb, Loader2, UserRound, X } from "lucide-react";
+import { Clapperboard, ImagePlus, Lightbulb, UserRound, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { setAgentContext } from "@/lib/agent";
 import { StatefulButton, type ButtonState } from "@/components/motion/button/stateful";
@@ -23,8 +23,8 @@ import { StylePicker, type CustomStyle } from "@/components/app/style-picker";
 import { VoiceField } from "@/components/app/voice-field";
 import { EASE_OUT } from "@/lib/ease";
 import { cn } from "@/lib/utils";
-import { api, type Config, type NewJob, type Voice } from "@/lib/api";
-import { dollars, estimateCost } from "@/lib/studio/cost";
+import { type Config, type NewJob, type Voice } from "@/lib/api";
+import { estimateWork, workLine } from "@/lib/studio/work";
 
 const POPULAR = ["en", "tr", "es", "fr", "de", "pt", "ar", "hi", "zh", "ja", "ko", "ru"];
 const IDEAS = ["Why is the sky blue?", "How do bees make honey?", "The first photograph", "How do volcanoes work?"];
@@ -38,7 +38,7 @@ function Label({ children, aside }: { children: React.ReactNode; aside?: React.R
   );
 }
 
-type Character = { preview: string; url: string; uploading: boolean; error?: string };
+type Character = { preview: string; file: File; error?: string };
 
 function NarratorSlot({ value, name, onName, onFile, onClear }: { value: Character | null; name: string; onName: (v: string) => void; onFile: (f: File) => void; onClear: () => void }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -71,13 +71,8 @@ function NarratorSlot({ value, name, onName, onFile, onClear }: { value: Charact
             </motion.span>
           )}
         </AnimatePresence>
-        {value?.uploading && (
-          <span className="absolute inset-0 flex items-center justify-center bg-background/60">
-            <Loader2 className="size-4 animate-spin" />
-          </span>
-        )}
       </button>
-      {value && !value.uploading && !value.error ? (
+      {value && !value.error ? (
         <input
           value={name}
           onChange={(e) => onName(e.target.value)}
@@ -86,7 +81,7 @@ function NarratorSlot({ value, name, onName, onFile, onClear }: { value: Charact
         />
       ) : (
         <button type="button" onClick={() => fileRef.current?.click()} className="min-w-0 flex-1 text-left">
-          <p className={cn("truncate text-sm", value?.error ? "text-destructive" : "font-medium")}>{value?.error ?? (value?.uploading ? "Uploading…" : "Your own character")}</p>
+          <p className={cn("truncate text-sm", value?.error ? "text-destructive" : "font-medium")}>{value?.error ?? "Your own character"}</p>
           <p className="truncate text-xs text-muted-foreground">Optional · drop an image, or one is invented</p>
         </button>
       )}
@@ -114,12 +109,11 @@ function NarratorSlot({ value, name, onName, onFile, onClear }: { value: Charact
 
 type Props = {
   config: Config;
-  busy: boolean;
   onStart: (body: NewJob) => Promise<void>;
   onError: (message: string) => void;
 };
 
-export function CreateForm({ config, busy, onStart, onError }: Props) {
+export function CreateForm({ config, onStart, onError }: Props) {
   const [topic, setTopic] = useState("");
   const [topicError, setTopicError] = useState<string | false>(false);
   const [style, setStyle] = useState(() => {
@@ -127,6 +121,7 @@ export function CreateForm({ config, busy, onStart, onError }: Props) {
     return config.styles.some((s) => s.id === wanted) ? (wanted as string) : (config.styles[0]?.id ?? "stick-figure");
   });
   const [custom, setCustom] = useState<CustomStyle | null>(null);
+  const [styleFile, setStyleFile] = useState<File | null>(null);
   const [minutes, setMinutes] = useState(1);
   const [language, setLanguage] = useState("en");
   const [character, setCharacter] = useState<Character | null>(null);
@@ -145,40 +140,35 @@ export function CreateForm({ config, busy, onStart, onError }: Props) {
       kind: "create",
       topic: topic.trim(),
       style,
-      styleUrl: custom?.url ?? "",
+      styleUrl: custom?.preview ?? "",
       minutes,
       language,
       characterId: member?.id ?? "",
-      characterUrl: choice.kind === "upload" ? (character?.url ?? "") : "",
+      characterUrl: choice.kind === "upload" ? (character?.preview ?? "") : "",
       characterName: choice.kind === "upload" ? charName.trim() : "",
       voice: voice ? { voice_id: voice.voice_id, name: voice.name } : null,
     });
   }, [topic, style, custom, minutes, language, member, choice, character, charName, voice]);
   useEffect(() => () => setAgentContext(null), []);
 
-  async function uploadStyle(file: File) {
-    const preview = URL.createObjectURL(file);
-    setCustom({ preview, url: "", uploading: true });
+  const ok = (file: File) => {
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!["png", "jpg", "jpeg", "webp"].includes(ext)) return "png / jpg / webp only";
+    if (file.size > 20 * 1024 * 1024) return "image is larger than 20 MB";
+    return "";
+  };
+
+  function pickStyle(file: File) {
+    const bad = ok(file);
+    if (bad) return onError(bad);
+    setCustom({ preview: URL.createObjectURL(file), url: file.name, uploading: false });
+    setStyleFile(file);
     setStyle("custom");
-    try {
-      const url = await api.upload(file);
-      setCustom({ preview, url, uploading: false });
-    } catch (e) {
-      setCustom(null);
-      setStyle(config.styles[0]?.id ?? "stick-figure");
-      onError((e as Error).message);
-    }
   }
 
-  async function uploadCharacter(file: File) {
-    const preview = URL.createObjectURL(file);
-    setCharacter({ preview, url: "", uploading: true });
-    try {
-      const url = await api.upload(file);
-      setCharacter({ preview, url, uploading: false });
-    } catch (e) {
-      setCharacter({ preview, url: "", uploading: false, error: (e as Error).message });
-    }
+  function pickCharacter(file: File) {
+    const bad = ok(file);
+    setCharacter({ preview: URL.createObjectURL(file), file, error: bad || undefined });
   }
 
   async function go() {
@@ -186,14 +176,15 @@ export function CreateForm({ config, busy, onStart, onError }: Props) {
       setTopicError("Give the film a topic first");
       return;
     }
-    if (!member && ((style === "custom" && !custom?.url) || character?.uploading)) {
-      onError("An image is still uploading");
+    if (!member && style === "custom" && !styleFile) {
+      onError("Choose the illustration that sets the look");
       return;
     }
-    if (choice.kind === "upload" && !character?.url) {
-      onError("Upload your character first");
+    if (choice.kind === "upload" && !character?.file) {
+      onError("Choose your character image first");
       return;
     }
+    if (character?.error) return onError(character.error);
     setSubmit("loading");
     try {
       await onStart({
@@ -201,8 +192,8 @@ export function CreateForm({ config, busy, onStart, onError }: Props) {
         style: member ? member.style : style,
         minutes,
         language,
-        style_url: !member && style === "custom" ? (custom?.url ?? "") : "",
-        character_url: choice.kind === "upload" ? (character?.url ?? "") : "",
+        styleFile: !member && style === "custom" ? styleFile : null,
+        characterFile: choice.kind === "upload" ? (character?.file ?? null) : null,
         character_name: choice.kind === "upload" ? charName.trim() : "",
         character_id: member?.id ?? "",
         voice,
@@ -320,20 +311,16 @@ export function CreateForm({ config, busy, onStart, onError }: Props) {
             Make the film
           </StatefulButton>
           <p className="text-center text-[11px] text-muted-foreground">
-            {busy ? "A film is in production; new ones wait in line." : `${who} · ${member ? member.style_label : styleLabel} · ${minutes} min · ready in about ${Math.round(4 + 1.5 * minutes)} min`}
+            {who} · {member ? member.style_label : styleLabel} · {minutes} min · about {Math.round(estimateWork(minutes).seconds)} s of film
           </p>
           {(() => {
-            const c = estimateCost(minutes, !member);
+            const w = estimateWork(minutes, { invent: !member, customStyle: !member && style === "custom", uploadedCharacter: choice.kind === "upload" });
             return (
               <p className="text-center text-[11px] text-muted-foreground">
-                About{" "}
-                <span
-                  className="cursor-help tabular-nums underline decoration-dotted underline-offset-2"
-                  title={`Video ${dollars(c.video)} · images ${dollars(c.images)} · voice & music ${dollars(c.sound)} · direction & checks ${dollars(c.direction)}`}
-                >
-                  {dollars(c.total)}
+                <span className="cursor-help tabular-nums underline decoration-dotted underline-offset-2" title={workLine(w)}>
+                  {w.total} steps
                 </span>{" "}
-                on your fal key
+                for you to run, in {w.blocks} blocks
               </p>
             );
           })()}
@@ -356,11 +343,12 @@ export function CreateForm({ config, busy, onStart, onError }: Props) {
                 value={character}
                 name={charName}
                 onName={setCharName}
-                onFile={uploadCharacter}
+                onFile={pickCharacter}
                 onClear={() => {
                   setCharacter(null);
                   setCharName("");
                 }}
+
               />
             </motion.div>
           )}
@@ -369,7 +357,7 @@ export function CreateForm({ config, busy, onStart, onError }: Props) {
               <Label aside={<span className="truncate text-[11px] text-muted-foreground">{style === "custom" ? "Your uploaded illustration sets the look" : `${chosen?.label}: ${chosen?.blurb}`}</span>}>
                 {choice.kind === "upload" ? "Redraw it in" : "Look"}
               </Label>
-              <StylePicker styles={config.styles} categories={config.categories} value={style} onChange={setStyle} custom={custom} onCustomFile={uploadStyle} />
+              <StylePicker styles={config.styles} categories={config.categories} value={style} onChange={setStyle} custom={custom} onCustomFile={pickStyle} />
             </motion.div>
           )}
         </AnimatePresence>

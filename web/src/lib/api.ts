@@ -1,7 +1,8 @@
+import { assetRef, keepAsset, IMAGE_EXTS } from "@/lib/studio/assets";
 import { studioData, seedFilms } from "@/lib/studio/data";
-import { upload } from "@/lib/studio/fal";
-import { newRecord, runFilm } from "@/lib/studio/pipeline";
-import { allRecords, loadRecord, saveRecord, type FilmRecord } from "@/lib/studio/store";
+import { Studio } from "@/lib/studio/manual";
+import { newRecord } from "@/lib/studio/pipeline";
+import { allRecords, deleteRecord, loadRecord, saveRecord, type FilmRecord } from "@/lib/studio/store";
 import * as voices from "@/lib/studio/voices";
 
 export type Style = { id: string; label: string; thumb: string; category: string; blurb: string };
@@ -30,22 +31,23 @@ export type Config = {
 export type PlanBlock = { kind: "V" | "T"; text: string };
 export type Plan = { title: string; subtitle: string; character: { name: string }; blocks: PlanBlock[] };
 
-export type JobEvent = { t: number; stage: string; msg: string; images?: string[]; videos?: string[]; plan?: Plan };
+export type JobEvent = { t: number; stage: string; msg: string };
 export type JobResult = { title: string; duration: number; video: string; clean: string | null; poster: string | null };
+export type JobStatus = "draft" | "working" | "done";
 export type Job = {
   id: string;
   topic: string;
   style: string;
+  style_label: string;
   minutes: number;
   lang: string;
-  status: "queued" | "running" | "done" | "error";
+  status: JobStatus;
   stage: string;
+  title: string;
   result: JobResult | null;
-  error: string | null;
   created: number;
-  project: string | null;
-  events?: JobEvent[];
-  resumable?: boolean;
+  project: string;
+  events: JobEvent[];
 };
 
 export type Film = {
@@ -82,8 +84,10 @@ export type NewJob = {
   style: string;
   minutes: number;
   language: string;
-  style_url: string;
-  character_url: string;
+  /** Your own illustration, kept in the film's folder as input/style.*. */
+  styleFile: File | null;
+  /** Your own character, kept in the film's folder as input/character.*. */
+  characterFile: File | null;
   character_name: string;
   character_id: string;
   voice: Voice | null;
@@ -147,7 +151,7 @@ const toFilm = (d: FilmRecord): Film | null => {
     clean: r.clean ?? null,
     poster: r.poster ?? null,
     thumb: d.thumb ?? null,
-    keyframes: Object.values(a.keyframes || {}) as string[],
+    keyframes: Object.values(a.keyframes || {}).filter(Boolean) as string[],
     script: (d.blocks || []).map((b: PlanBlock) => b.text),
     kinds: (d.blocks || []).map((b: PlanBlock) => b.kind),
     character_id: d.character_id || "",
@@ -163,17 +167,27 @@ export function toJob(d: FilmRecord): Job {
     id: d.id,
     topic: d.topic,
     style: d.style,
+    style_label: d.style_label || d.style,
     minutes: d.minutes,
     lang: d.lang,
-    status: d.status,
+    status: (d.status === "done" ? "done" : d.status === "draft" ? "draft" : "working") as JobStatus,
     stage: d.stage,
+    title: `${d.title || ""} ${d.subtitle || ""}`.trim(),
     result: d.status === "done" ? d.result : null,
-    error: d.error || null,
     created: d.created,
-    project: d.project || null,
+    project: d.project || "",
     events: [...(d.events || [])],
-    resumable: d.status === "error" && Boolean(d.state?.plan),
   };
+}
+
+const ext = (file: File) => (file.name.split(".").pop() || "").toLowerCase();
+
+async function keepInput(project: string, kind: "style" | "character", file: File) {
+  if (!IMAGE_EXTS.includes(ext(file))) throw new Error("png / jpg / webp only");
+  if (file.size > 20 * 1024 * 1024) throw new Error("image is larger than 20 MB");
+  const path = `input/${kind}.${ext(file)}`;
+  await keepAsset(`${project}/${path}`, file);
+  return assetRef(project, path);
 }
 
 export const api = {
@@ -191,13 +205,21 @@ export const api = {
     }
     return [...byId.values()].sort((a, b) => b.created - a.created);
   },
+  /** Every film of yours, finished or not, so the workbench can be picked up again. */
+  projects: async (): Promise<Job[]> => (await allRecords().catch(() => [] as FilmRecord[])).map(toJob).sort((a, b) => b.created - a.created),
   job: async (id: string) => {
     const d = await loadRecord(id);
     if (!d) throw new Error("film not found");
     return d;
   },
+  open: async (id: string) => {
+    const d = await loadRecord(id);
+    if (!d) throw new Error("film not found");
+    return Studio.open(d);
+  },
+  discard: (id: string) => deleteRecord(id),
 
-  create: async (body: NewJob, onEvent: (e: JobEvent, rec: FilmRecord) => void) => {
+  create: async (body: NewJob): Promise<FilmRecord> => {
     const d = await studioData();
     if (!body.topic.trim()) throw new Error("topic is empty");
     let style = body.style;
@@ -206,7 +228,7 @@ export const api = {
       if (!c) throw new Error("unknown character");
       style = c.style;
     }
-    const known = d.styles.some((s) => s.id === style) || (style === "custom" && body.style_url);
+    const known = d.styles.some((s) => s.id === style) || (style === "custom" && body.styleFile);
     if (!known || !d.languages.some((l) => l.code === body.language) || body.minutes < 1 || body.minutes > d.max_minutes)
       throw new Error("bad style / language / minutes");
     const v = body.voice;
@@ -215,47 +237,37 @@ export const api = {
       style,
       minutes: body.minutes,
       lang: body.language,
-      style_url: body.style_url,
-      character_url: body.character_id ? "" : body.character_url,
+      style_url: "",
+      character_url: "",
       character_name: body.character_name.trim(),
       character_id: body.character_id,
       voice: v?.voice_id ? { voice_id: v.voice_id, name: v.name, gender: v.gender, age: v.age, accent: v.accent, description: v.description } : {},
     });
-    rec.events.push({ t: 0, stage: "queued", msg: "Queued" });
+    if (!body.character_id && style === "custom" && body.styleFile) rec.style_url = await keepInput(rec.project, "style", body.styleFile);
+    if (!body.character_id && body.characterFile) rec.character_url = await keepInput(rec.project, "character", body.characterFile);
+    rec.events.push({ t: 0, stage: "script", msg: `Project folder: ${rec.project}` });
     await saveRecord(rec);
-    return { rec, done: runFilm(rec, onEvent) };
+    return rec;
   },
 
-  resume: async (id: string, onEvent: (e: JobEvent, rec: FilmRecord) => void) => {
-    const rec = await loadRecord(id);
-    if (!rec?.state?.plan) throw new Error("nothing to resume");
-    rec.status = "queued";
-    rec.error = "";
-    return { rec, done: runFilm(rec, onEvent) };
-  },
   voiceFacets: () => voices.facets(),
   voices: (q: VoiceQuery, page: number, signal?: AbortSignal) => voices.search(q, page, signal),
+  curatedVoices: () => voices.curated(),
   sample: (voice_id: string, topic: string, language: string) => voices.audition(voice_id, topic, language),
   characterVoice: (id: string, language: string) => voices.characterIntro(id, language),
   preview: (v: Voice, language: string) => voices.preview(v, language),
-  upload: (file: File) => {
-    const ext = (file.name.split(".").pop() || "").toLowerCase();
-    if (!["png", "jpg", "jpeg", "webp"].includes(ext)) return Promise.reject(new Error("png / jpg / webp only"));
-    if (file.size > 20 * 1024 * 1024) return Promise.reject(new Error("image is larger than 20 MB"));
-    return upload(file);
-  },
 };
 
 export const STAGES = [
-  ["director", "Script"],
+  ["read", "Your images"],
+  ["script", "Script"],
   ["character", "Character"],
-  ["voice", "Voice"],
+  ["voice", "Narration"],
   ["keyframes", "Keyframes"],
   ["shots", "Shots"],
   ["music", "Score"],
-  ["assemble", "Edit"],
-  ["render", "Render"],
-  ["subtitles", "Subtitles"],
+  ["endcard", "End card"],
+  ["edit", "Edit"],
 ] as const;
 
 export function clock(t: number) {

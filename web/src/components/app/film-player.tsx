@@ -2,6 +2,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Captions, Loader2, Maximize, Minimize, Pause, PictureInPicture2, Play, RotateCcw, Volume1, Volume2, VolumeX } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import { EASE_OUT, SPRING_PRESS } from "@/lib/ease";
+import { useMediaUrl } from "@/lib/studio/assets";
 import { cn } from "@/lib/utils";
 
 const SPEEDS = [1, 1.25, 1.5, 2, 0.75];
@@ -45,7 +46,11 @@ export function FilmPlayer({ src, cleanSrc, poster, autoPlay = false, className 
   const [scrubbing, setScrubbing] = useState(false);
   const [flash, setFlash] = useState<{ id: number; icon: "play" | "pause" | "back" | "fwd" } | null>(null);
 
-  const current = cleanSrc && !subs ? cleanSrc : src;
+  // Files made by hand live in the project folder, so every source is resolved before it reaches the element.
+  const srcUrl = useMediaUrl(src);
+  const cleanUrl = useMediaUrl(cleanSrc);
+  const posterUrl = useMediaUrl(poster);
+  const current = cleanUrl && !subs ? cleanUrl : srcUrl;
 
   const poke = useCallback(() => {
     setIdle(false);
@@ -91,10 +96,10 @@ export function FilmPlayer({ src, cleanSrc, poster, autoPlay = false, className 
 
   const swapSubs = useCallback(() => {
     const v = video.current;
-    if (!cleanSrc || !v) return;
+    if (!cleanUrl || !v) return;
     resume.current = { t: v.currentTime, play: !v.paused };
     setSubs((s) => !s);
-  }, [cleanSrc]);
+  }, [cleanUrl]);
 
   useEffect(() => {
     const on = () => setFull(document.fullscreenElement === root.current);
@@ -173,7 +178,7 @@ export function FilmPlayer({ src, cleanSrc, poster, autoPlay = false, className 
       <video
         ref={video}
         src={current}
-        poster={poster ?? undefined}
+        poster={posterUrl || undefined}
         autoPlay={autoPlay}
         playsInline
         preload="metadata"
@@ -324,7 +329,7 @@ export function FilmPlayer({ src, cleanSrc, poster, autoPlay = false, className 
           </span>
 
           <div className="ml-auto flex items-center gap-1">
-            {cleanSrc && (
+            {cleanUrl && (
               <CtrlButton label={subs ? "Subtitles on (c)" : "Subtitles off (c)"} onClick={swapSubs} active={subs}>
                 <Captions className="size-4.5" />
               </CtrlButton>

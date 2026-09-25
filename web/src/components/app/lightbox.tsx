@@ -4,12 +4,15 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { FilmPlayer } from "@/components/app/film-player";
 import { SPRING_PANEL } from "@/lib/ease";
+import { mediaUrl, useMediaUrl } from "@/lib/studio/assets";
 import { cn } from "@/lib/utils";
 
 export type LightboxItem = { url: string; kind: "image" | "video"; caption?: string };
 
 export async function downloadFile(url: string, name?: string) {
-  const blob = await fetch(url).then((r) => r.blob());
+  const resolved = await mediaUrl(url);
+  if (!resolved) throw new Error("that file is not in the project folder");
+  const blob = await fetch(resolved).then((r) => r.blob());
   const href = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = href;
@@ -18,6 +21,13 @@ export async function downloadFile(url: string, name?: string) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(href), 10_000);
+}
+
+/** An image that may live in the project folder rather than on the web. */
+export function Art({ src, className, alt = "", ...rest }: { src?: string | null } & React.ImgHTMLAttributes<HTMLImageElement>) {
+  const url = useMediaUrl(src);
+  if (!url) return <span className={cn("block bg-muted", className)} aria-hidden />;
+  return <img src={url} alt={alt} className={className} {...rest} />;
 }
 
 export function Lightbox({ items, index, onIndex, onClose }: { items: LightboxItem[]; index: number | null; onIndex: (i: number) => void; onClose: () => void }) {
@@ -98,7 +108,7 @@ export function Lightbox({ items, index, onIndex, onClose }: { items: LightboxIt
                     <FilmPlayer src={item.url} autoPlay />
                   </div>
                 ) : (
-                  <img src={item.url} alt={item.caption ?? ""} className="max-h-[calc(100dvh-7rem)] max-w-full rounded-2xl object-contain shadow-2xl" />
+                  <Art src={item.url} alt={item.caption ?? ""} className="max-h-[calc(100dvh-7rem)] max-w-full rounded-2xl object-contain shadow-2xl" />
                 )}
               </motion.div>
             </AnimatePresence>

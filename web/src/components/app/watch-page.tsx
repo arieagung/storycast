@@ -5,24 +5,27 @@ import { setAgentContext } from "@/lib/agent";
 import { AgentPromptButton } from "@/components/app/agent-button";
 import { FilmPlayer } from "@/components/app/film-player";
 import { fmtDuration } from "@/components/app/film-card";
-import { Lightbox, downloadFile, type LightboxItem } from "@/components/app/lightbox";
+import { Art, Lightbox, downloadFile, type LightboxItem } from "@/components/app/lightbox";
 import { ShareDialog } from "@/components/app/share-dialog";
 import { Button } from "@/components/motion/button/base";
 import { EASE_OUT } from "@/lib/ease";
 import { Link, navigate } from "@/lib/router";
+import { isLocalRef } from "@/lib/studio/assets";
 import { cn } from "@/lib/utils";
 import { STAGES, clock, languageName, nativeLanguage, type CastMember, type Film } from "@/lib/api";
 import { SHARING, ShareError, countView, isSharedId, ownedFilm, report, sharedCopy, sharedFilm } from "@/lib/share";
 
 const STAGE_LABEL: Record<string, string> = { ...Object.fromEntries(STAGES), done: "Done" };
 
+/** The step, and the model the pipeline was written for. Your own film may have been made with something else. */
 const CREDITS = (voice: string) => [
-  { role: "Story & direction", who: "Claude Opus 5.5", note: "script, shot plan and a second editing pass for flow" },
-  { role: "Characters & keyframes", who: "GPT Image 2.5", note: "model sheet, portrait and one painted frame per scene" },
-  { role: "Animation", who: "MiniMax H3 Max", note: "reference-to-video shots and lip-synced talking shots, 768p" },
-  { role: "Narration", who: "ElevenLabs v3", note: voice ? `voice: ${voice}` : "Voice Library voice" },
-  { role: "Score", who: "ElevenLabs Music", note: "instrumental, written for this film" },
-  { role: "Edit, mix & subtitles", who: "fal ffmpeg-api · workflow-utilities", note: "trim, merge, compose, loudness, word-by-word captions" },
+  { role: "Story & direction", who: "a reasoning LLM", note: "script, shot plan and a second editing pass for flow" },
+  { role: "Characters & keyframes", who: "an image model with references", note: "model sheet, portrait and one painted frame per scene" },
+  { role: "Animation", who: "reference-to-video", note: "one shot per block, 768p" },
+  { role: "On-camera lines", who: "lip-sync", note: "talking blocks animated to the recording" },
+  { role: "Narration", who: "text to speech", note: voice ? `voice: ${voice}` : "one recording per block" },
+  { role: "Score", who: "a music model", note: "instrumental, written for this film" },
+  { role: "Edit, mix & subtitles", who: "ffmpeg, locally", note: "trim, join, mix, loudness and word-by-word captions written from the script" },
 ];
 
 const ago = (created: number) => {
@@ -43,7 +46,7 @@ function StoryCard({ film }: { film: Film }) {
     <Link to={`/films/${film.id}`} className="group flex min-w-0 flex-col gap-2">
       <div className="relative aspect-video overflow-hidden rounded-xl bg-black ring-1 ring-border">
         {(film.thumb || film.poster) && (
-          <img src={film.thumb || film.poster!} alt="" loading="lazy" className="size-full object-cover transition-transform duration-500 group-hover:scale-[1.04]" />
+          <Art src={film.thumb || film.poster!} loading="lazy" className="size-full object-cover transition-transform duration-500 group-hover:scale-[1.04]" />
         )}
         <span className="absolute top-1.5 left-1.5 rounded-full bg-black/65 px-1.5 py-px text-[10px] font-medium text-white backdrop-blur-sm">{nativeLanguage(film.lang)}</span>
         <span className="absolute right-1.5 bottom-1.5 rounded bg-black/70 px-1 py-px font-mono text-[10px] text-white">{fmtDuration(film.duration)}</span>
@@ -169,7 +172,8 @@ export function WatchPage({ id, films, cast, loading }: { id: string; films: Fil
   const firstName = narrator?.name.split(" ").pop();
   const voice = film.voice.split(" - ")[0];
   const mineShared = film.mine ? sharedCopy(film.id) : film.community ? ownedFilm(film.id) : null;
-  const canShare = SHARING && (film.mine || !!mineShared);
+  // Sharing hands the worker a URL to fetch. A film that lives in your own folder has none.
+  const canShare = SHARING && !isLocalRef(film.video) && (film.mine || !!mineShared);
 
   return (
     <div className="grid gap-x-10 gap-y-12 pt-8 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -177,9 +181,8 @@ export function WatchPage({ id, films, cast, loading }: { id: string; films: Fil
 
         <div className="relative isolate">
           {film.poster && (
-            <img
+            <Art
               src={film.thumb || film.poster}
-              alt=""
               aria-hidden
               className="pointer-events-none absolute inset-0 -z-10 size-full object-cover opacity-50 blur-3xl saturate-150"
             />
@@ -328,7 +331,7 @@ export function WatchPage({ id, films, cast, loading }: { id: string; films: Fil
             <div className="scrollbar-hide -mx-1 mt-6 flex gap-2 overflow-x-auto px-1 pb-1">
               {film.keyframes.map((k, i) => (
                 <button key={k} type="button" onClick={() => setView(i)} aria-label={`Keyframe ${i + 1}`} className="w-36 shrink-0 overflow-hidden rounded-xl ring-1 ring-border">
-                  <img src={k} alt="" loading="lazy" className="aspect-video w-full object-cover transition-transform duration-300 hover:scale-105" />
+                  <Art src={k} loading="lazy" className="aspect-video w-full object-cover transition-transform duration-300 hover:scale-105" />
                 </button>
               ))}
             </div>

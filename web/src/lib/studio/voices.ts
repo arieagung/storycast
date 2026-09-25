@@ -1,11 +1,8 @@
 import type { Voice, VoiceFacets, VoicePage, VoiceQuery } from "@/lib/api";
 import { studioData, seedCache } from "./data";
-import { translate } from "./director";
-import { run } from "./fal";
-import { cacheGet, cacheSet } from "./store";
+import { cacheGet } from "./store";
 import { SHARE_API } from "@/lib/share";
 
-const TTS = "fal-ai/elevenlabs/tts/eleven-v3";
 export const PREVIEW_LINE = "Hi! I'm your narrator. Sit back, and let me tell you a story you won't forget.";
 export const TOPIC_LINE = "Hi, I'm your narrator. Today's story: {topic}.";
 
@@ -32,25 +29,43 @@ export async function search(q: VoiceQuery, page = 0, signal?: AbortSignal): Pro
   return voiceApi<VoicePage>("/api/voices", { q: JSON.stringify(q), page: String(page) }, signal);
 }
 
-export type VoiceCheck = { voice: Voice | null; speaks: boolean; native: Voice | null };
-
-export async function checkVoice(by: { id?: string; name?: string }, lang: string): Promise<VoiceCheck> {
-  const none = { voice: null, speaks: true, native: null };
-  if (!SHARE_API || !(by.id || by.name)) return none;
-  const language = (await studioData()).languages.find((l) => l.code === lang)?.name ?? "English";
-  return voiceApi<VoiceCheck>("/api/voices/check", { ...(by.id ? { id: by.id } : { name: by.name! }), lang, language }).catch(() => none);
+/** The voices the catalog ships with, as a list the picker can show without any service behind it. */
+export async function curated(): Promise<Voice[]> {
+  const { curated_voices } = await studioData();
+  return Object.entries(curated_voices).map(([voice_id, blurb]) => {
+    const [name, ...rest] = String(blurb).split(":");
+    return {
+      voice_id,
+      name: name.trim(),
+      description: rest.join(":").trim(),
+      preview_url: "",
+      category: "curated",
+      tags: [],
+      short: rest.join(":").trim(),
+      gender: "",
+      age: "",
+      accent: "",
+      collections: 0,
+      curated: true,
+    } satisfies Voice;
+  });
 }
 
 export async function line(template: string, lang: string): Promise<string> {
   if (lang === "en") return template;
   const key = `${lang}|${template}`;
-  const seeded = (await seedCache()).lines[key];
-  const hit = cacheGet("lines", key) ?? seeded;
-  if (hit) return hit;
-  const t = await translate(template, lang);
-  cacheSet("lines", key, t);
-  return t;
+  return cacheGet("lines", key) ?? (await seedCache()).lines[key] ?? template;
 }
+
+/* ------------------------------------------------------------------ *\
+   Samples
+
+   The original spoke a line through fal whenever it wanted to audition a
+   voice. Nothing here can make audio, so a sample only plays when the
+   catalog already ships one for that exact line.
+\* ------------------------------------------------------------------ */
+
+const NO_SAMPLE = "No sample for this one. Hear the voice in whichever text-to-speech service you use.";
 
 async function sampleKey(voiceId: string, lang: string, text: string) {
   const bytes = new TextEncoder().encode(`${voiceId}|${lang}|${text}`);
@@ -62,10 +77,8 @@ export async function sample(voiceId: string, text: string, lang = "en"): Promis
   const clean = Array.from(text.split(/\s+/).filter(Boolean).join(" ")).slice(0, 320).join("");
   const key = await sampleKey(voiceId, lang, clean);
   const hit = cacheGet("samples", key) ?? (await seedCache()).samples[key];
-  if (hit) return hit;
-  const r = await run<{ audio: { url: string } }>(TTS, { text: clean, voice: voiceId, stability: 0.5, language_code: lang });
-  cacheSet("samples", key, r.audio.url);
-  return r.audio.url;
+  if (!hit) throw new Error(NO_SAMPLE);
+  return hit;
 }
 
 export async function audition(voiceId: string, topic: string, lang: string) {
@@ -76,13 +89,14 @@ export async function audition(voiceId: string, topic: string, lang: string) {
 export async function characterIntro(characterId: string, lang: string) {
   const c = (await studioData()).characters.find((x) => x.id === characterId);
   if (!c) throw new Error("unknown character");
-  const text = await line(`Hi, I'm ${c.name}! ${c.personality}.`, lang);
-  return sample(c.voice.voice_id, text, lang);
+  return sample(c.voice.voice_id, await line(`Hi, I'm ${c.name}! ${c.personality}.`, lang), lang);
 }
 
 export async function preview(v: Voice, lang: string) {
-  const name = (await studioData()).languages.find((l) => l.code === lang)?.name ?? "English";
-  const native = lang === "en" || (v.languages ?? []).includes(name.split(" ")[0].toLowerCase());
-  if (v.preview_url && native) return v.preview_url;
+  if (v.preview_url) return v.preview_url;
   return sample(v.voice_id, await line(PREVIEW_LINE, lang), lang);
 }
+
+/** Without a service to ask, every voice is assumed to speak every language. */
+export type VoiceCheck = { voice: Voice | null; speaks: boolean; native: Voice | null };
+export const checkVoice = async (): Promise<VoiceCheck> => ({ voice: null, speaks: true, native: null });

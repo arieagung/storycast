@@ -1,7 +1,10 @@
-import { run } from "./fal";
+import type { AssetInfo } from "./assets";
 import { studioData, type StyleFull } from "./data";
 
+/** The model the original pipeline aimed at. Kept so every step can say what it was written for. */
 export const DIRECTOR_MODEL = "anthropic/claude-opus-5.5";
+export const DIRECTOR_APP = "openrouter/router";
+export const VISION_APP = "openrouter/router/vision";
 
 export type Given = { name: string; traits: string; pronoun: string; personality?: string };
 export type GivenVoice = { voice_id: string; name?: string; gender?: string; age?: string; accent?: string; description?: string; descriptive?: string };
@@ -16,8 +19,8 @@ export type Block = {
   sound: string;
   id: string;
   shot: string;
-  audio_url?: string;
-  audio_dur?: number;
+  /** The narration file for this block, once it is in the project folder. */
+  audio?: AssetInfo;
 };
 export type Tail = { scene: string; action: string; camera: string; sound: string; shot: string };
 export type Plan = {
@@ -41,7 +44,7 @@ export function words(minutes: number): [string, string] {
   return minutes <= 1 ? ["14-22", "16-24"] : ["18-32", "18-30"];
 }
 
-async function languageName(lang: string) {
+export async function languageName(lang: string) {
   return (await studioData()).languages.find((l) => l.code === lang)?.name ?? "English";
 }
 
@@ -106,58 +109,132 @@ JSON SHAPE
  "tail": {"scene": "", "action": "", "camera": "", "sound": ""}}`;
 }
 
-function parse(text: string): any {
-  let t = text.trim();
-  const m = t.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (m) t = m[1];
-  return JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
-}
+/* ------------------------------------------------------------------ *\
+   Reading an answer that was pasted back by hand
+\* ------------------------------------------------------------------ */
 
-async function ask(system: string, prompt: string, maxTokens = 16000): Promise<any> {
-  let last: unknown;
-  for (let i = 0; i < 2; i++) {
-    const r = await run<{ output?: string }>("openrouter/router", {
-      model: DIRECTOR_MODEL,
-      system_prompt: system,
-      prompt,
-      max_tokens: maxTokens,
-      reasoning: true,
-    });
-    try {
-      return parse(r.output || "");
-    } catch (e) {
-      last = e;
-      prompt += "\n\nYour previous answer was not valid JSON. Return ONLY the JSON object.";
-    }
+/** Accepts a bare JSON object, a fenced block, or an answer with prose around it. */
+export function parseJson<T = any>(text: string): T {
+  let t = (text ?? "").trim();
+  if (!t) throw new Error("Paste the answer first");
+  const fenced = t.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced) t = fenced[1];
+  const open = t.indexOf("{");
+  const close = t.lastIndexOf("}");
+  if (open < 0 || close <= open) throw new Error("No JSON object found in that answer");
+  try {
+    return JSON.parse(t.slice(open, close + 1)) as T;
+  } catch (e) {
+    throw new Error(`That is not valid JSON: ${e instanceof Error ? e.message : e}`);
   }
-  throw new Error(`director returned invalid JSON: ${last}`);
 }
 
-export async function plan(topic: string, style: StyleFull, minutes: number, lang: string, character?: Given | null, voice?: GivenVoice | null): Promise<Plan> {
-  const [n] = shape(minutes);
-  const { curated_voices } = await studioData();
+const str = (x: unknown): x is string => typeof x === "string" && x.trim() !== "";
+const text = (x: unknown, fallback = "") => (str(x) ? x.trim() : fallback);
 
-  const p = await ask(await directorSystem(style, minutes, lang, character, voice), `TOPIC: ${topic}`, Math.min(64000, 6000 + 900 * n));
-  if (character) p.character = { name: character.name, traits: character.traits, pronoun: character.pronoun };
-  const blocks: Block[] = p.blocks || [];
-  if (!blocks.length || blocks[0].kind !== "V") throw new Error("director plan invalid: first block must be V");
-  for (const b of blocks) if (b.kind === "T") b.character_in_shot = true;
-  const before = blocks.map((b) => b.text + b.scene);
-  p.blocks = await continuity(blocks, minutes, lang);
-  const inserted = p.blocks.length - blocks.length;
-  p.continuity = { rewrites: p.blocks.filter((b: Block) => before.includes(b.text + b.scene) === false).length - inserted, bridges: inserted };
-  if (voice) p.voice_id = voice.voice_id;
-  else if (!(p.voice_id in curated_voices)) p.voice_id = Object.keys(curated_voices)[0];
-  p.slug =
-    String(p.slug || p.title || "film")
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 48) || "film";
-  return p as Plan;
+export const slugify = (s: string) =>
+  String(s || "film")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "film";
+
+export type PlanReview = { plan: Plan; warnings: string[] };
+
+/** Turns a pasted director answer into a plan, or explains what is missing. */
+export async function reviewPlan(raw: any, opts: { minutes: number; character?: Given | null; voice?: GivenVoice | null }): Promise<PlanReview> {
+  const { curated_voices, cameras } = await studioData();
+  const warnings: string[] = [];
+  if (!raw || typeof raw !== "object") throw new Error("The answer is not a JSON object");
+  const rawBlocks: any[] = Array.isArray(raw.blocks) ? raw.blocks : [];
+  if (!rawBlocks.length) throw new Error('The answer has no "blocks"');
+  if (!rawBlocks.every((b) => b?.kind === "V" || b?.kind === "T")) throw new Error('Every block needs "kind": "V" or "T"');
+  if (!rawBlocks.every((b) => str(b.text))) throw new Error('Every block needs a "text"');
+  if (!rawBlocks.every((b) => str(b.scene))) throw new Error('Every block needs a "scene"');
+  if (rawBlocks[0].kind !== "V") throw new Error("The first block must be V (voice-over), because the film opens on a shot without the narrator talking");
+  if (!raw.tail || !str(raw.tail.scene)) throw new Error('The answer needs a "tail" with a "scene"');
+
+  const [want, wantTalk] = shape(opts.minutes);
+  if (rawBlocks.length !== want) warnings.push(`${rawBlocks.length} blocks instead of ${want}; the film will be about ${rawBlocks.length > want ? "longer" : "shorter"} than ${opts.minutes} min`);
+  const talk = rawBlocks.filter((b) => b.kind === "T").length;
+  if (talk !== wantTalk) warnings.push(`${talk} on-camera blocks instead of ${wantTalk}`);
+  if (rawBlocks[rawBlocks.length - 1].kind !== "V") warnings.push("The last block is on camera; the original always ends on a voice-over");
+  const offCamera = rawBlocks.filter((b) => b.kind === "V" && b.character_in_shot === false).length;
+  if (offCamera > 2) warnings.push(`${offCamera} blocks leave the narrator out of the shot; the original allows at most 2`);
+  const odd = [...new Set(rawBlocks.map((b) => text(b.camera)).filter((c) => c && !cameras.includes(c)))];
+  if (odd.length) warnings.push(`Camera moves outside the catalog: ${odd.join(", ")}`);
+
+  const blocks: Block[] = rawBlocks.map((b) => ({
+    kind: b.kind,
+    text: text(b.text),
+    place: text(b.place),
+    scene: text(b.scene),
+    character_in_shot: b.kind === "T" ? true : b.character_in_shot !== false,
+    action: text(b.action),
+    camera: text(b.camera, "gentle drift"),
+    sound: text(b.sound, "soft ambience"),
+    id: "",
+    shot: "",
+  }));
+
+  const c = opts.character;
+  const character = c
+    ? { name: c.name, traits: c.traits, pronoun: c.pronoun }
+    : { name: text(raw.character?.name, "Narrator"), traits: text(raw.character?.traits), pronoun: text(raw.character?.pronoun, "its") };
+  if (!c && !character.traits) throw new Error('The answer needs "character.traits": one comma-separated line of visual traits, used in every image prompt');
+
+  let voice_id = opts.voice?.voice_id || text(raw.voice_id);
+  if (!voice_id) {
+    voice_id = Object.keys(curated_voices)[0];
+    warnings.push(`No voice in the answer; using ${voice_id}`);
+  } else if (!opts.voice && !(voice_id in curated_voices)) {
+    // The original forced the answer back onto its own list. Here the id is only
+    // a label you carry to your own service, so an unknown one is worth a word, not a swap.
+    warnings.push(`Voice "${voice_id}" is not one the catalog knows; it is passed through as written`);
+  }
+
+  const title = text(raw.title, character.name);
+  const plan: Plan = {
+    title,
+    subtitle: text(raw.subtitle),
+    slug: slugify(text(raw.slug, title)),
+    character,
+    voice_id,
+    music_prompt: text(raw.music_prompt, "Sparse acoustic score, warm and curious. Acoustic instruments only, no vocals."),
+    blocks,
+    tail: {
+      scene: text(raw.tail.scene),
+      action: text(raw.tail.action, "The character waves goodbye as the scene settles."),
+      camera: text(raw.tail.camera, "slow pull-back"),
+      sound: text(raw.tail.sound, "soft ambience"),
+      shot: "",
+    },
+  };
+  if (!plan.music_prompt) warnings.push('No "music_prompt" in the answer');
+  return { plan, warnings };
 }
+
+/** B01, B02 … for the blocks and S/T shot names, exactly as the original numbered them. */
+export function numberPlan(plan: Plan): Plan {
+  plan.blocks.forEach((b, i) => {
+    const n = String(i + 1).padStart(2, "0");
+    b.id = `B${n}`;
+    b.shot = (b.kind === "T" ? "T" : "S") + n;
+  });
+  plan.tail.shot = `S${String(plan.blocks.length + 1).padStart(2, "0")}`;
+  return plan;
+}
+
+/* ------------------------------------------------------------------ *\
+   Script editor pass
+\* ------------------------------------------------------------------ */
 
 export const CONTINUITY_SYSTEM = "You are the script editor of a short narrated character film. You protect the viewer's sense of flow. Return ONLY JSON.";
+
+export const mostInserts = (blocks: number) => Math.max(1, Math.min(Math.floor(blocks / 5), 64 - blocks));
+
+export const continuityScript = (blocks: Block[]) =>
+  JSON.stringify(blocks.map((b, index) => ({ index, kind: b.kind, place: b.place ?? "", text: b.text ?? "", scene: b.scene ?? "" })));
 
 export async function continuityPrompt(script: string, minutes: number, lang: string, most: number) {
   const { cameras } = await studioData();
@@ -177,41 +254,44 @@ export async function continuityPrompt(script: string, minutes: number, lang: st
   );
 }
 
-export async function continuity(blocks: Block[], minutes: number, lang: string): Promise<Block[]> {
-  const most = Math.max(1, Math.min(Math.floor(blocks.length / 5), 64 - blocks.length));
-  const script = blocks.map((b, index) => ({ index, kind: b.kind, place: b.place ?? "", text: b.text ?? "", scene: b.scene ?? "" }));
-  const prompt = await continuityPrompt(JSON.stringify(script), minutes, lang, most);
-
-  let r: any;
-  try {
-    r = await ask(CONTINUITY_SYSTEM, prompt, Math.min(32000, 6000 + 500 * blocks.length));
-  } catch {
-    return blocks;
-  }
+/** Applies a pasted script-editor answer. Anything malformed is ignored, exactly as the original did. */
+export function applyContinuity(blocks: Block[], r: any, most: number): { blocks: Block[]; rewrites: number; bridges: number } {
   const out = blocks.map((b) => ({ ...b }));
-  const str = (x: unknown): x is string => typeof x === "string" && x.trim() !== "";
+  let rewrites = 0;
   for (const e of r?.edits ?? []) {
     const i = e?.index;
     if (!Number.isInteger(i) || i < 0 || i >= out.length) continue;
-    for (const k of ["text", "scene", "place"] as const) if (str(e[k])) out[i][k] = e[k];
+    let touched = false;
+    for (const k of ["text", "scene", "place"] as const)
+      if (str(e[k]) && out[i][k] !== e[k].trim()) {
+        out[i][k] = e[k].trim();
+        touched = true;
+      }
+    if (touched) rewrites++;
   }
   const inserts = (r?.inserts ?? [])
-    .filter((x: { after?: unknown; text?: unknown; scene?: unknown }) => Number.isInteger(x?.after) && (x.after as number) >= 0 && (x.after as number) < blocks.length && str(x.text) && str(x.scene))
+    .filter((x: any) => Number.isInteger(x?.after) && x.after >= 0 && x.after < blocks.length && str(x.text) && str(x.scene))
     .slice(0, most)
     .sort((a: { after: number }, b: { after: number }) => b.after - a.after);
   for (const x of inserts)
     out.splice(x.after + 1, 0, {
       kind: "V",
-      text: x.text,
-      place: x.place ?? "",
-      scene: x.scene,
+      text: text(x.text),
+      place: text(x.place),
+      scene: text(x.scene),
       character_in_shot: x.character_in_shot !== false,
-      action: x.action || "The character moves on through the scene.",
-      camera: x.camera || "gentle drift",
-      sound: x.sound || "soft ambience",
-    } as Block);
-  return out;
+      action: text(x.action, "The character moves on through the scene."),
+      camera: text(x.camera, "gentle drift"),
+      sound: text(x.sound, "soft ambience"),
+      id: "",
+      shot: "",
+    });
+  return { blocks: out, rewrites, bridges: inserts.length };
 }
+
+/* ------------------------------------------------------------------ *\
+   Smaller asks
+\* ------------------------------------------------------------------ */
 
 export const RESIZE_SYSTEM = "You edit narration lines. Return ONLY JSON.";
 
@@ -219,9 +299,8 @@ export function resizePrompt(text: string, seconds: string, want: string, langua
   return `This talking line lasts ${seconds} s when spoken; it must last 6-12 s. Make it ${want}, keep the meaning, language ${language}. Line: "${text}"\nReturn {"text": "..."}`;
 }
 
-export async function resizeLine(text: string, seconds: number, lang: string): Promise<string> {
-  const prompt = resizePrompt(text, seconds.toFixed(1), seconds > 12 ? "shorter" : "longer", await languageName(lang));
-  return (await ask(RESIZE_SYSTEM, prompt, 2000)).text;
+export async function resizeAsk(line: string, seconds: number, lang: string) {
+  return resizePrompt(line, seconds.toFixed(1), seconds > 12 ? "shorter" : "longer", await languageName(lang));
 }
 
 export const REPHRASE_SYSTEM = "You rewrite image prompts that were rejected by a safety filter. Return ONLY JSON.";
@@ -234,46 +313,30 @@ export function rephrasePrompt(scene: string) {
   );
 }
 
-export async function rephraseScene(scene: string): Promise<string> {
-  return (await ask(REPHRASE_SYSTEM, rephrasePrompt(scene), 2000)).scene;
-}
-
-async function see(system: string, prompt: string, imageUrls: string[]): Promise<any> {
-  let last: unknown;
-  for (let i = 0; i < 2; i++) {
-    const r = await run<{ output?: string }>("openrouter/router/vision", {
-      model: DIRECTOR_MODEL,
-      system_prompt: system,
-      prompt,
-      image_urls: imageUrls,
-      max_tokens: 6000,
-      reasoning: true,
-    });
-    try {
-      return parse(r.output || "");
-    } catch (e) {
-      last = e;
-      prompt += "\n\nReturn ONLY the JSON object.";
-    }
-  }
-  throw new Error(`vision director returned invalid JSON: ${last}`);
-}
-
 export type DescribedStyle = { label?: string; anchor: string; motion: string; character_hint?: string; palette: { bg: string; text: string; accent: string } };
 
 export const STYLE_SYSTEM = "You are an art director. You describe illustration styles so an image model can reproduce them. Return ONLY JSON.";
 export const STYLE_PROMPT =
-    "Describe ONLY the art style of this image (medium, line quality, texture, lighting, palette, rendering), never its content. Return JSON: " +
-    '{"label": "2-4 word style name", ' +
-    '"anchor": "one sentence starting like \'<Style> film still: ...\' listing medium, linework, texture, lighting, palette, ending with \'widescreen 16:9 composition.\'", ' +
-    '"motion": "one sentence describing how this style looks when animated", ' +
-    '"character_hint": "what kind of narrator character fits this style world", ' +
-    '"palette": {"bg": "#dark hex from the image", "text": "#light hex", "accent": "#accent hex"}}';
+  "Describe ONLY the art style of this image (medium, line quality, texture, lighting, palette, rendering), never its content. Return JSON: " +
+  '{"label": "2-4 word style name", ' +
+  '"anchor": "one sentence starting like \'<Style> film still: ...\' listing medium, linework, texture, lighting, palette, ending with \'widescreen 16:9 composition.\'", ' +
+  '"motion": "one sentence describing how this style looks when animated", ' +
+  '"character_hint": "what kind of narrator character fits this style world", ' +
+  '"palette": {"bg": "#dark hex from the image", "text": "#light hex", "accent": "#accent hex"}}';
 
-export async function describeStyle(imageUrl: string): Promise<DescribedStyle> {
-  const d = await see(STYLE_SYSTEM, STYLE_PROMPT, [imageUrl]);
-  d.palette ??= { bg: "#141414", text: "#f6f1e8", accent: "#f0a45a" };
-  return d;
+export function reviewStyle(raw: any): DescribedStyle {
+  if (!str(raw?.anchor)) throw new Error('The answer needs an "anchor": the sentence pasted into every image prompt');
+  return {
+    label: text(raw.label, "Custom style"),
+    anchor: text(raw.anchor),
+    motion: text(raw.motion, "The illustration moves with gentle, hand-made motion."),
+    character_hint: text(raw.character_hint, "an original narrator that belongs to this world"),
+    palette: {
+      bg: text(raw.palette?.bg, "#141414"),
+      text: text(raw.palette?.text, "#f6f1e8"),
+      accent: text(raw.palette?.accent, "#f0a45a"),
+    },
+  };
 }
 
 export const CHARACTER_SYSTEM = "You are a character designer writing a model-sheet description. Return ONLY JSON.";
@@ -287,14 +350,7 @@ export function characterDescribePrompt(name: string) {
   );
 }
 
-export async function describeCharacter(imageUrl: string, name = ""): Promise<Given> {
-  const d = await see(CHARACTER_SYSTEM, characterDescribePrompt(name), [imageUrl]);
-  if (name) d.name = name;
-  return d;
-}
-
-export async function translate(text: string, lang: string): Promise<string> {
-  if (lang === "en") return text;
-  const sys = "You translate short UI strings. Keep any {placeholder} exactly as written. Return ONLY JSON.";
-  return (await ask(sys, `Translate into ${await languageName(lang)}: "${text}"\nReturn {"text": "..."}`, 1500)).text;
+export function reviewCharacter(raw: any, name = ""): Given {
+  if (!str(raw?.traits)) throw new Error('The answer needs "traits": one comma-separated line of visual traits');
+  return { name: name || text(raw.name, "Narrator"), traits: text(raw.traits), pronoun: text(raw.pronoun, "its") };
 }

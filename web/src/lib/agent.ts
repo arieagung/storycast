@@ -4,7 +4,6 @@ import { REPO_URL } from "@/lib/share";
 import { studioData, type StudioData } from "@/lib/studio/data";
 import * as D from "@/lib/studio/director";
 import * as P from "@/lib/studio/pipeline";
-import { checkVoice } from "@/lib/studio/voices";
 
 export type AgentContext =
   | {
@@ -62,8 +61,7 @@ async function resolve(ctx: AgentContext | null, data: StudioData) {
     minutes = ctx.film.minutes ?? Math.max(1, Math.round(ctx.film.duration / 60));
     narrator = data.characters.find((c) => c.id === ctx.film.character_id) ?? null;
     look = data.styles.find((s) => s.id === (narrator?.style ?? ctx.film.style)) ?? null;
-    const used = ctx.film.voice ? (await checkVoice({ name: ctx.film.voice }, lang)).voice : null;
-    if (used) voice = { voice_id: used.voice_id, name: used.name, gender: used.gender, age: used.age, accent: used.accent, description: used.description };
+    if (ctx.film.voice) voice = { voice_id: "", name: ctx.film.voice };
   } else if (ctx?.kind === "create") {
     topic = ctx.topic;
     minutes = ctx.minutes;
@@ -72,23 +70,10 @@ async function resolve(ctx: AgentContext | null, data: StudioData) {
     look = data.styles.find((s) => s.id === (narrator?.style ?? ctx.style)) ?? null;
     if (!narrator && ctx.style === "custom") customLook = ctx.styleUrl;
     if (!narrator && ctx.characterUrl) uploaded = { url: ctx.characterUrl, name: ctx.characterName };
-    if (ctx.voice) {
-      const rec = (await checkVoice({ id: ctx.voice.voice_id }, lang)).voice;
-      voice = rec ? { voice_id: rec.voice_id, name: rec.name, gender: rec.gender, age: rec.age, accent: rec.accent, description: rec.description } : ctx.voice;
-    }
+    if (ctx.voice) voice = ctx.voice;
   }
 
-  if (narrator && !voice) {
-    voice = { ...narrator.voice };
-    const check = await checkVoice({ id: narrator.voice.voice_id }, lang);
-    if (check.voice && !check.speaks) {
-      const alt = check.native;
-      if (alt) {
-        voiceNote = `${narrator.name}'s own voice is not made for this language, so ${alt.name.split(" - ")[0]} narrates instead.`;
-        voice = { voice_id: alt.voice_id, name: alt.name, gender: alt.gender, age: alt.age, accent: alt.accent, description: alt.description };
-      }
-    }
-  }
+  if (narrator && !voice) voice = { ...narrator.voice };
   return { topic, minutes, lang, look, customLook, narrator, uploaded, voice, voiceNote, reference };
 }
 
@@ -137,16 +122,18 @@ export async function agentBrief(ctx: AgentContext | null): Promise<string> {
   add(
     "# Make a Storycast film",
     "",
-    "Make a short narrated animated film on fal exactly the way Storycast does it. Follow the steps in order, run independent calls in parallel,",
-    "keep every URL fal returns, and show the user the script before you spend on video.",
+    "Make a short narrated animated film exactly the way Storycast does it. Follow the steps in order, run independent steps in parallel,",
+    "keep every file you get back, and show the user the script before you spend anything on video.",
     "",
     "## Setup",
     "",
-    "- Use the user's fal key (`FAL_KEY`). Call every endpoint below through the fal MCP server, `@fal-ai/client` (`fal.subscribe(endpoint, { input })`)",
-    "  or the queue API (`https://queue.fal.run/<endpoint>`). Upload local files with `fal.storage.upload`.",
-    "- Measure the length of every audio and video file you get back (ffprobe or the `duration` field) and keep it.",
+    "- Each step names the fal endpoint the pipeline was written for. Use it if you have a fal key, or the closest equivalent you do have:",
+    "  a reasoning LLM for the text steps, an image model that accepts several reference images for the frames, a reference-to-video model",
+    "  and a lip-sync model for the shots, a text-to-speech voice for the narration, and a music model for the score.",
+    "- Keep every result as a local file. Measure the length of every audio and video file (ffprobe or the model's `duration` field); the cut depends on it.",
+    "- The last two steps are plain ffmpeg, not models. Do them locally.",
     `- Catalog: ${origin}/data/config.json (looks, narrators with their ElevenLabs voice ids, languages, camera moves; paths are relative to ${origin}).`,
-    "- Voices: use the narrator's own voice. For any other voice, take its voice id from the ElevenLabs Voice Library (https://elevenlabs.io/app/voice-library).",
+    "- Voices: use the narrator's own voice where there is one; otherwise pick from the curated list in the director's instructions below.",
     `- Source of this pipeline: ${REPO_URL}/tree/main/web/src/lib/studio`,
     "",
     "## Inputs",
@@ -349,21 +336,16 @@ export async function agentBrief(ctx: AgentContext | null): Promise<string> {
         `tail: from tailStart for ${P.TAIL_DUR}; end card after it for ${P.END_CARD}; total = tailStart + ${P.TAIL_DUR + P.END_CARD}`,
       ].join("\n"),
     ),
-    `1. Cut every shot to its segment: d = min(segment, shot length); if the shot is more than 0.05 s longer, \`${P.TRIM}\` \`{video_url, start_time: 0, duration: d}\`.`,
-    `2. \`${P.MERGE}\` \`{video_urls: [...cuts, end card clip], target_fps: ${P.FPS}, resolution: ${json(P.FRAME)}}\` → picture.`,
-    `3. \`${P.COMPOSE}\` \`{tracks}\` → \`video_url\`, times in ms:`,
-    ...fence(
-      "json",
-      json([
-        { id: "picture", type: "video", keyframes: [{ timestamp: 0, duration: "{TOTAL_MS}", url: "{PICTURE}" }] },
-        { id: "picture-sound", type: "audio", keyframes: [{ timestamp: 0, duration: "{TOTAL_MS}", url: "{PICTURE}" }] },
-        { id: "vo-B01", type: "audio", keyframes: [{ timestamp: "{START_MS of each V block}", duration: "{NARRATION_MS}", url: "{NARRATION}" }] },
-        { id: "music", type: "audio", keyframes: [{ timestamp: 0, duration: "{TOTAL_MS}", url: "{MUSIC}" }] },
-      ]),
-    ),
-    "   One vo track per V block; T narration is already in its lip-sync shot.",
-    `4. \`${P.LOUDNORM}\` \`{audio_url: composed, integrated_loudness: ${P.FINAL_LUFS}, true_peak: -1.5}\`, then \`${P.MERGE_AV}\` \`{video_url: composed, audio_url}\` → the clean cut.`,
-    `   If it is more than 0.3 s longer than total, \`${P.TRIM}\` it to total.`,
+    `This is ffmpeg work, not a model. The original ran it as \`${P.TRIM}\`, \`${P.MERGE}\`, \`${P.STILL}\`, \`${P.COMPOSE}\`, \`${P.LOUDNORM}\` and \`${P.MERGE_AV}\` on fal; locally it is:`,
+    "",
+    `1. Cut every shot to its slot: \`-t <slot> -vf "scale=${P.FRAME.width}:${P.FRAME.height}:force_original_aspect_ratio=increase,crop=${P.FRAME.width}:${P.FRAME.height},fps=${P.FPS}" -an\`.`,
+    "   If a shot is shorter than its slot, hold its last frame (`tpad=stop_mode=clone:stop_duration=<missing>`) so the picture cannot drift away from the narration.",
+    `2. The end card: \`-loop 1 -i card.png -t ${P.END_CARD}\` with the same filter. Then join every cut and the card with the concat demuxer → picture.`,
+    "3. The mix, one ffmpeg call over the picture plus every narration file plus the score:",
+    "   - each block's narration `adelay=<start[b] in ms>:all=1`, including the talking blocks (the same file the lip-sync was made from, so it lands in sync);",
+    `   - the score \`loudnorm=I=${P.MUSIC_LUFS}:TP=-2\`;`,
+    `   - a shot's own sound only if you listened to it and it has no speech in it (the original used \`${P.SEPARATE}\` to strip speech out);`,
+    `   - \`amix=inputs=N:duration=longest:normalize=0\`, then \`loudnorm=I=${P.FINAL_LUFS}:TP=-1.5\`, \`apad\`, \`atrim=0:<total>\` → the clean cut.`,
   );
 
   const sub = P.subtitleInput(r.lang, font, look.palette?.accent ?? "#f0a45a");
@@ -371,8 +353,10 @@ export async function agentBrief(ctx: AgentContext | null): Promise<string> {
     "",
     "## 10. Subtitles",
     "",
-    `\`${P.SUBTITLE}\` \`${json({ video_url: "{CLEAN_CUT}", ...sub })}\`${r.look ? "" : " (highlight_color: the palette accent mapped to the nearest of yellow, orange, red, pink, purple, blue, cyan, green, magenta)"}.`,
-    "If the language is not supported, the clean cut is the film.",
+    `The original transcribed the film with \`${P.SUBTITLE}\`. Do not: you already know every word and every length, so write the subtitles directly.`,
+    "Give each block the stretch of film its narration occupies, split it into groups of four words, and share each group's time between its words in",
+    "proportion to how long they take to say. Emit one event per word so the spoken word can carry the accent colour while the rest of the line stays white.",
+    `Style: \`${json(sub)}\`. Burn it in with \`-vf "ass=subtitles.ass"\`.`,
     "",
     'Give the user the film, the clean cut and the script. The title is "{TITLE} {SUBTITLE}".',
   );
