@@ -27,8 +27,11 @@ export type Plan = {
   title: string;
   subtitle: string;
   slug: string;
-  character: { name: string; traits: string; pronoun: string };
+  /** tag (Veo Mode): 2-4 generic English words, e.g. "the felt bear"; video prompts say "NAME, TAG" once, then the name. */
+  character: { name: string; traits: string; pronoun: string; tag?: string };
   voice_id: string;
+  /** Veo Mode only: one English sentence describing the narrator's voice, repeated in every shot prompt. */
+  voice_desc?: string;
   music_prompt: string;
   blocks: Block[];
   tail: Tail;
@@ -50,16 +53,106 @@ export async function languageName(lang: string) {
 
 const quotedList = (xs: string[]) => `[${xs.map((x) => `'${x}'`).join(", ")}]`;
 
-export async function directorSystem(style: StyleFull, minutes: number, lang: string, character?: Given | null, voice?: GivenVoice | null) {
+/* ------------------------------------------------------------------ *\
+   Storytelling style
+
+   Chosen separately from the character: the character sets the look and
+   the voice, the storytelling style sets tone and structure. The
+   character's personality only reaches the script when asked for.
+\* ------------------------------------------------------------------ */
+
+export type NarrativeId = "auto" | "documentary" | "bedtime" | "adventure" | "comedic" | "mystery" | "legend" | "personality" | "custom";
+export type Narrative = { id: NarrativeId; text?: string };
+
+export const NARRATIVES: { id: NarrativeId; label: string; blurb: string; rule?: string }[] = [
+  { id: "auto", label: "Auto", blurb: "The director picks the approach that fits the topic best" },
+  {
+    id: "documentary",
+    label: "Natural documentary",
+    blurb: "Real places and things, warm and informative",
+    rule: "a nature-documentary tone: warm, calm, curious and informative. The narrator guides the viewer through the real subject and lets the wonder of the facts carry the film.",
+  },
+  {
+    id: "bedtime",
+    label: "Bedtime story",
+    blurb: "Slow, gentle, a soothing ending",
+    rule: "a bedtime story: slow gentle rhythm, soft images and simple words, small cosy moments of wonder, no tension or scares, and a quiet soothing ending.",
+  },
+  {
+    id: "adventure",
+    label: "Adventure",
+    blurb: "A journey, curiosity and small challenges",
+    rule: "an adventure: the narrator travels through the real world of the topic, meets small obstacles and discoveries along the way, and each fact is earned as a step of the journey.",
+  },
+  {
+    id: "comedic",
+    label: "Comedic",
+    blurb: "Light and full of jokes, facts stay accurate",
+    rule: "a light comedy: playful timing, gentle running jokes and funny reactions from the narrator, while every fact stays accurate and clear.",
+  },
+  {
+    id: "mystery",
+    label: "Mystery",
+    blurb: "Opens with a question, the answer unfolds",
+    rule: "a mystery: open with an intriguing question, gather clues from the real subject block by block, and reveal the full answer near the end.",
+  },
+  {
+    id: "legend",
+    label: "Legend / epic",
+    blurb: "Told like a grand tale or great history",
+    rule: "a legend or epic: a grand, storyteller's voice, sweeping images and a sense of deep time, while real facts stay clearly separated from myth.",
+  },
+  { id: "personality", label: "Character's personality", blurb: "The narrator's own personality shapes the story" },
+  { id: "custom", label: "Custom", blurb: "Describe the storytelling style yourself" },
+];
+
+export const narrativeLabel = (n?: Narrative | null) => NARRATIVES.find((x) => x.id === (n?.id ?? "auto"))?.label ?? "Auto";
+
+function storyRules(character: Given | null | undefined, narrative: Narrative | null | undefined): string {
+  const id = narrative?.id ?? "auto";
+  if (id === "personality") {
+    // The original behaviour: the character's personality shapes the whole film.
+    return character?.personality
+      ? `- Personality: ${character.personality}. Let it shape the voice, the jokes and what ${character.name} notices.`
+      : "";
+  }
+  const preset = NARRATIVES.find((x) => x.id === id);
+  const custom = id === "custom" ? (narrative?.text ?? "").trim().replace(/[.\s]+$/, "") : "";
+  const story = custom
+    ? `- Storytelling style: ${custom}. Keep this style consistent across the whole film.`
+    : preset?.rule
+      ? `- Storytelling style: ${preset.rule}`
+      : "- Storytelling style: choose the approach that best fits this topic and a general audience (for example documentary, adventure, bedtime story, gentle comedy, mystery or legend) and keep it consistent across the whole film.";
+  return `${story}\n${SUBJECT_RULE}`;
+}
+
+/**
+ * Applies to every storytelling style: the scenes are where the film explains things, so they have
+ * to be rich and varied, not the narrator standing in front of the subject block after block.
+ */
+function visualRule(style: StyleFull) {
+  return (
+    `- Visual storytelling: the pictures do the explaining. For every V block, paint the single most vivid image that shows what that line says, as an illustration in the ${style.label} style: ` +
+    "go inside, underneath, up close or far above; use cutaways and cross-sections (the magma chamber under a volcano, the inside of a beehive), macro details, aerial views, " +
+    "moments from the past, before/after, cause and effect, scale comparisons, and the process itself in mid-action. " +
+    "Vary the subject, the shot scale and the composition from block to block; never repeat the same framing twice in a row, and never make the film a series of the narrator standing in front of the subject. " +
+    "Explanatory cutaways need no travel bridge: the narration carries the link, while scenes with the narrator keep the story's place and time coherent."
+  );
+}
+
+/** Keeps the character's hobby or job from replacing the topic with props; dropped when the personality is asked for. */
+const SUBJECT_RULE =
+  "- Subject: show the topic itself, never a stand-in for it: no models, toys, dioramas or props of the subject, and no move into the narrator's home, lab or workshop, unless the topic or the chosen storytelling style calls for it. " +
+  "The narrator's own hobbies or profession never decide the settings.";
+
+export async function directorSystem(style: StyleFull, minutes: number, lang: string, character?: Given | null, voice?: GivenVoice | null, veo = false, narrative?: Narrative | null) {
   const { cameras, curated_voices } = await studioData();
   const [n, talk] = shape(minutes);
   let charRule: string;
   if (character) {
     charRule =
       `- The narrator is GIVEN: name "${character.name}", traits "${character.traits}", pronoun "${character.pronoun}". ` +
-      'Copy these three values exactly into "character"; place this character naturally in every scene of the style world.';
-    if (character.personality)
-      charRule += ` Personality: ${character.personality}. Let it shape the voice, the jokes and what ${character.name} notices.`;
+      'Copy these three values exactly into "character"; whenever the narrator is in shot, place this character naturally in the style world.';
   } else {
     charRule = `- The narrator is ONE original character invented for this topic whose design belongs to the style world: ${style.character_hint}. Give it a short, memorable name. "traits" is ONE comma-separated string of 6-8 concrete visual traits (body, colors, material, clothing, one or two props). It must include a clearly visible mouth (needed for lip-sync). This exact string is pasted into every image prompt, so be specific and stable.`;
   }
@@ -67,44 +160,60 @@ export async function directorSystem(style: StyleFull, minutes: number, lang: st
   const voices = Object.entries(curated_voices)
     .map(([vid, desc]) => `- ${vid}: ${desc}`)
     .join("\n");
-  let voiceRule: string;
-  if (voice) {
-    const about = (["gender", "age", "accent", "descriptive"] as const)
-      .filter((k) => voice[k])
-      .map((k) => String(voice[k]))
-      .join(", ");
-    voiceRule =
-      `- "voice_id": the narrator voice is GIVEN: "${voice.voice_id}" (${voice.name ?? ""}; ${about}; ` +
-      `${(voice.description || "").slice(0, 300)}). Copy the id exactly, and make the narrator a character that plausibly has this voice.`;
-  } else {
-    voiceRule = `- "voice_id": pick the best matching voice for the character from:\n${voices}`;
+  let voiceRule = "";
+  if (!veo) {
+    if (voice) {
+      const about = (["gender", "age", "accent", "descriptive"] as const)
+        .filter((k) => voice[k])
+        .map((k) => String(voice[k]))
+        .join(", ");
+      voiceRule =
+        `- "voice_id": the narrator voice is GIVEN: "${voice.voice_id}" (${voice.name ?? ""}; ${about}; ` +
+        `${(voice.description || "").slice(0, 300)}). Copy the id exactly, and make the narrator a character that plausibly has this voice.`;
+    } else {
+      voiceRule = `- "voice_id": pick the best matching voice for the character from:\n${voices}`;
+    }
   }
   const language = await languageName(lang);
+  // Veo generates the voice itself, so the voice is described once here and repeated verbatim in every shot.
+  const voiceDescRule = veo
+    ? `- "character.tag": 2-4 plain generic English words saying what the narrator is, starting with "the" (e.g. "the felt bear"). ` +
+      "No brand, trademark or franchise words. Video prompts introduce the narrator once as NAME, TAG and then use the name alone." +
+      `\n- "voice_desc": ONE English sentence describing the narrator's speaking voice for a video model that generates the audio itself: ` +
+      `gender, age, timbre, pace and tone that fit this character, ` +
+      `and an accent that sounds natural for a native ${language} speaker. Never name a real person, voice actor or voice id. ` +
+      "This exact sentence is repeated in every shot so the voice stays identical across clips, so make it specific and stable."
+    : "";
   return `You are the director of a short narrated character film. One original character narrates a story that explains a topic to a general audience. Visual style: ${style.label}.
 Return ONLY one JSON object, no prose, no markdown fences.
 
 RULES
-${charRule}
+${[charRule, storyRules(character, narrative), visualRule(style)].filter(Boolean).join("\n")}
 - Script: exactly ${n} blocks, exactly ${talk} of them "T" (the character talks on camera); the rest are "V" (voice-over under cinematic shots). Block 1 is "V" and the last block is "V". Beyond that the story is yours: structure, tone, jokes, twists and how the character enters are your creative choices.
 - Text length: V blocks ${vw} words; T blocks ${tw} words. Language of all narration: ${language}. Spoken rhythm, one idea per block. Facts must be accurate; hedge legends and uncertain claims ("legend says").
-- Continuity: the film is one continuous story. Every block grows out of the one before it in place, time and logic. Whenever the setting, the time or the subject changes, the viewer sees or hears how and why we got there; never cut to a new place, companion or subject as if the viewer already knew. How you bridge is up to this story.
+- Continuity: the film is one continuous story. Every block grows out of the one before it in place, time and logic. Whenever the setting, the time or the subject changes, the viewer sees or hears how and why we got there; never cut to a new place, companion or subject as if the viewer already knew. How you bridge is up to this story. Carry continuity in the narration and in consistent visual wording, not in back-references: every "scene" is painted by an image model that has never seen the other shots, so when a set, prop or companion recurs, describe it again in full with the same concrete words (material, color, shape, position) every time it appears.
 - Stay inside the story: never say "this video" and never state how long the film is.
+- LANGUAGE RULE: "text" (narration) must be in ${language}. All other fields — "place", "scene", "action", "sound", "music_prompt", and the "tail" fields — must be written IN ENGLISH regardless of the narration language. "title" is the character's name (any language fine); "subtitle" is in ${language}.
 - For every block:
-  - "place": a short label of where and when the block happens.
-  - "scene": one paragraph (40-80 words) describing the keyframe: setting, era, lighting, composition, props, and what the character is doing. Everything exists in the style world (${style.label}). For T blocks describe the setting and one gesture only; the character faces the camera in a medium close-up, talking.
-  - "character_in_shot": true or false (T blocks are always true; at most 2 V blocks may be false).
-  - "action": 2-3 short present-tense motion beats for the video, including one small charming or comic beat (V blocks only; "" for T).
+  - "place": a short English label of where and when the block happens.
+  - "scene": one paragraph (40-80 words) IN ENGLISH describing the keyframe: what the image shows and explains, setting, era, lighting, composition, props, and, when the narrator is in shot, what the character is doing. Everything exists in the style world (${style.label}). For T blocks describe the setting and one gesture only; the character faces the camera in a medium close-up, talking. Write only what is visible in this single frame — never reference "the same table as before" or any other shot; describe what the image model will see as its only input. When "character_in_shot" is false, no character, person or creature resembling the narrator appears.
+  - "character_in_shot": T blocks are always true. For V blocks decide per shot what serves the explanation best: true when the narrator adds something to the picture (reacting, pointing, discovering, interacting, giving scale), false when the subject should fill the frame (cutaways, cross-sections, close-ups, processes, the past). A good film mixes both.
+  - "action": ${
+    veo
+      ? "IN ENGLISH, what moves in the video: for V blocks 2-3 short present-tense motion beats (with the narrator in shot, include one small charming or comic beat; without, show the subject itself in motion: magma rising, cells dividing, a wave forming); for T blocks ONE small gesture the character makes while talking. The video model starts from the keyframe, so describe only movement and change: call the narrator by name only and never describe again how the character, the set or the lighting look."
+      : 'IN ENGLISH, 2-3 short present-tense motion beats for the video (with the narrator in shot, include one small charming or comic beat; without, show the subject itself in motion) (V blocks only; "" for T).'
+  }
   - "camera": one of ${quotedList(cameras)}. Never use a push-in when the character is in shot.
-  - "sound": ambient foley for the shot (no music, no speech).
+  - "sound": ambient foley IN ENGLISH for the shot (no music, no speech).
 - NEVER put readable text, signs, labels, screens with words, or numbers in any scene. At most ONE block may show one big simple word or year if it is essential; then write "shows only the large letters X" in its scene.
-- Describe real people generically (no likeness), no brand logos, no violence or danger to children.
-- "tail": the final shot after the last block: the character in a wide shot saying goodbye or resolving the story, with calm open space in the upper third for the title. Give "scene", "action", "camera" (prefer "slow pull-back"), "sound".
-${voiceRule}
+- Avoid anything a strict filter could flag (real names, brands, danger, weapons, crowds panicking). Describe real people generically (no likeness), no brand logos, no violence or danger to children. In every field, never use brand names, trademarks, franchise or famous-character names, or words closely tied to them (write "felt bear", not "teddy bear").
+- "tail": the final shot after the last block: the character in a wide shot saying goodbye or resolving the story, with calm open space in the upper third for the title. Give "scene", "action", "camera" (prefer "slow pull-back"), "sound" — all IN ENGLISH.
+${veo ? voiceDescRule : voiceRule}
 - "music_prompt": an instrumental score description fitting the style and topic: 3-5 acoustic instruments, mood arc, sparse under narration, a warm swell in the final twenty seconds ending on a soft resolved chord. End with "Acoustic instruments only, no vocals."
 - "title": the character's name. "subtitle": a short lowercase phrase starting with "and the ..." (in ${language}). "slug": 3-5 word ascii kebab-case.
 
 JSON SHAPE
-{"title": "", "subtitle": "", "slug": "", "character": {"name": "", "traits": "", "pronoun": "his|her|its"}, "voice_id": "", "music_prompt": "",
+{"title": "", "subtitle": "", "slug": "", "character": {"name": "", "traits": "", "pronoun": "his|her|its"${veo ? ', "tag": ""' : ""}}, ${veo ? '"voice_desc": "", ' : '"voice_id": "", '}"music_prompt": "",
  "blocks": [{"kind": "V|T", "text": "", "place": "", "scene": "", "character_in_shot": true, "action": "", "camera": "", "sound": ""}],
  "tail": {"scene": "", "action": "", "camera": "", "sound": ""}}`;
 }
@@ -142,7 +251,7 @@ export const slugify = (s: string) =>
 export type PlanReview = { plan: Plan; warnings: string[] };
 
 /** Turns a pasted director answer into a plan, or explains what is missing. */
-export async function reviewPlan(raw: any, opts: { minutes: number; character?: Given | null; voice?: GivenVoice | null }): Promise<PlanReview> {
+export async function reviewPlan(raw: any, opts: { minutes: number; character?: Given | null; voice?: GivenVoice | null; veo?: boolean }): Promise<PlanReview> {
   const { curated_voices, cameras } = await studioData();
   const warnings: string[] = [];
   if (!raw || typeof raw !== "object") throw new Error("The answer is not a JSON object");
@@ -159,8 +268,6 @@ export async function reviewPlan(raw: any, opts: { minutes: number; character?: 
   const talk = rawBlocks.filter((b) => b.kind === "T").length;
   if (talk !== wantTalk) warnings.push(`${talk} on-camera blocks instead of ${wantTalk}`);
   if (rawBlocks[rawBlocks.length - 1].kind !== "V") warnings.push("The last block is on camera; the original always ends on a voice-over");
-  const offCamera = rawBlocks.filter((b) => b.kind === "V" && b.character_in_shot === false).length;
-  if (offCamera > 2) warnings.push(`${offCamera} blocks leave the narrator out of the shot; the original allows at most 2`);
   const odd = [...new Set(rawBlocks.map((b) => text(b.camera)).filter((c) => c && !cameras.includes(c)))];
   if (odd.length) warnings.push(`Camera moves outside the catalog: ${odd.join(", ")}`);
 
@@ -183,14 +290,17 @@ export async function reviewPlan(raw: any, opts: { minutes: number; character?: 
     : { name: text(raw.character?.name, "Narrator"), traits: text(raw.character?.traits), pronoun: text(raw.character?.pronoun, "its") };
   if (!c && !character.traits) throw new Error('The answer needs "character.traits": one comma-separated line of visual traits, used in every image prompt');
 
-  let voice_id = opts.voice?.voice_id || text(raw.voice_id);
-  if (!voice_id) {
-    voice_id = Object.keys(curated_voices)[0];
-    warnings.push(`No voice in the answer; using ${voice_id}`);
-  } else if (!opts.voice && !(voice_id in curated_voices)) {
-    // The original forced the answer back onto its own list. Here the id is only
-    // a label you carry to your own service, so an unknown one is worth a word, not a swap.
-    warnings.push(`Voice "${voice_id}" is not one the catalog knows; it is passed through as written`);
+  let voice_id = "";
+  if (!opts.veo) {
+    voice_id = opts.voice?.voice_id || text(raw.voice_id);
+    if (!voice_id) {
+      voice_id = Object.keys(curated_voices)[0];
+      warnings.push(`No voice in the answer; using ${voice_id}`);
+    } else if (!opts.voice && !(voice_id in curated_voices)) {
+      // The original forced the answer back onto its own list. Here the id is only
+      // a label you carry to your own service, so an unknown one is worth a word, not a swap.
+      warnings.push(`Voice "${voice_id}" is not one the catalog knows; it is passed through as written`);
+    }
   }
 
   const title = text(raw.title, character.name);
@@ -210,6 +320,14 @@ export async function reviewPlan(raw: any, opts: { minutes: number; character?: 
       shot: "",
     },
   };
+  if (opts.veo) {
+    const tag = text(raw.character?.tag).replace(/[.\s]+$/, "");
+    if (tag) plan.character.tag = tag;
+    else warnings.push('No "character.tag" in the answer; shot prompts name the narrator without a short description');
+    const desc = text(raw.voice_desc);
+    if (desc) plan.voice_desc = desc.replace(/[.\s]+$/, "") + ".";
+    else warnings.push('No "voice_desc" in the answer; shot prompts fall back to a description built from the chosen voice');
+  }
   if (!plan.music_prompt) warnings.push('No "music_prompt" in the answer');
   return { plan, warnings };
 }
@@ -245,8 +363,10 @@ export async function continuityPrompt(script: string, minutes: number, lang: st
     'subject or companion appears) and that viewer would ask "wait, how did we get here?" or "why are we talking about this now?", ' +
     "repair the flow so every block grows out of the one before. How you bridge is your choice and should fit this particular story. " +
     `You may rewrite the text and scene of the blocks around a jump, and you may insert up to ${most} new V blocks where the story needs a ` +
-    "moment to travel or explain. Leave blocks that already flow untouched. Keep the narration language " +
-    `(${await languageName(lang)}), the narrator, the facts, ${vw} words for V and ${tw} words for T blocks, and no readable text in scenes.\n` +
+    "moment to travel or explain. Leave blocks that already flow untouched. " +
+    `Keep "text" (narration) in ${await languageName(lang)}. Keep "scene", "place", "action", "sound" IN ENGLISH. ` +
+    "Every scene you write or rewrite must be self-contained: describe recurring sets and props in full, never with back-references like \"the same table\". " +
+    `Keep the narrator, the facts, ${vw} words for V and ${tw} words for T blocks, no readable text in scenes, and avoid anything a strict filter could flag (real names, brands, danger, weapons, crowds panicking).\n` +
     `SCRIPT: ${script}\n` +
     'Return {"edits": [{"index": 0, "text": "", "scene": "", "place": ""}], ' +
     '"inserts": [{"after": 0, "text": "", "place": "", "scene": "", "character_in_shot": true, "action": "", "camera": "", "sound": ""}]} ' +
@@ -309,6 +429,7 @@ export function rephrasePrompt(scene: string) {
   return (
     "Rewrite this scene so it keeps the story meaning but avoids anything a strict filter could flag " +
     "(real names, brands, danger, weapons, crowds panicking). " +
+    'Write the new scene in English and keep it self-contained: describe every set and prop in full, never refer to other shots. ' +
     `Scene: "${scene}"\nReturn {"scene": "..."}`
   );
 }
@@ -316,13 +437,20 @@ export function rephrasePrompt(scene: string) {
 export type DescribedStyle = { label?: string; anchor: string; motion: string; character_hint?: string; palette: { bg: string; text: string; accent: string } };
 
 export const STYLE_SYSTEM = "You are an art director. You describe illustration styles so an image model can reproduce them. Return ONLY JSON.";
-export const STYLE_PROMPT =
-  "Describe ONLY the art style of this image (medium, line quality, texture, lighting, palette, rendering), never its content. Return JSON: " +
-  '{"label": "2-4 word style name", ' +
-  '"anchor": "one sentence starting like \'<Style> film still: ...\' listing medium, linework, texture, lighting, palette, ending with \'widescreen 16:9 composition.\'", ' +
-  '"motion": "one sentence describing how this style looks when animated", ' +
-  '"character_hint": "what kind of narrator character fits this style world", ' +
-  '"palette": {"bg": "#dark hex from the image", "text": "#light hex", "accent": "#accent hex"}}';
+
+export function stylePrompt(veo = false) {
+  const ending = veo ? "" : ", ending with 'widescreen 16:9 composition.'";
+  return (
+    "Describe ONLY the art style of this image (medium, line quality, texture, lighting, palette, rendering), never its content. Return JSON: " +
+    '{"label": "2-4 word style name", ' +
+    `"anchor": "one sentence starting like '<Style> film still: ...' listing medium, linework, texture, lighting, palette${ending}", ` +
+    '"motion": "one sentence describing how this style looks when animated", ' +
+    '"character_hint": "what kind of narrator character fits this style world", ' +
+    '"palette": {"bg": "#dark hex from the image", "text": "#light hex", "accent": "#accent hex"}}'
+  );
+}
+
+export const STYLE_PROMPT = stylePrompt(false);
 
 export function reviewStyle(raw: any): DescribedStyle {
   if (!str(raw?.anchor)) throw new Error('The answer needs an "anchor": the sentence pasted into every image prompt');

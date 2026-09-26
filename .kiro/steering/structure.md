@@ -19,8 +19,9 @@ storycast/
 │   │   ├── index.css              # Global styles and Tailwind CSS directives
 │   │   ├── components/
 │   │   │   ├── app/               # Domain-specific UI components
-│   │   │   │   ├── agent-button.tsx     # "Copy agent prompt" button
+│   │   │   ├── agent-button.tsx     # "Copy agent prompt" button
 │   │   │   │   ├── character-picker.tsx # Character selection carousel/grid
+│   │   │   │   ├── character-swap-dialog.tsx # Drawer dialog for changing character narrator mid-project
 │   │   │   │   ├── create-form.tsx      # New film configuration form (topic, style, voice, length)
 │   │   │   │   ├── film-card.tsx        # Card for finished films in gallery/library
 │   │   │   │   ├── film-player.tsx      # Video player with controls; resolves local: refs via useMediaUrl
@@ -85,6 +86,8 @@ storycast/
 │   │           │                  # Prompt builders: directorSystem, continuityPrompt, keyframePrompt, shotPrompt,
 │   │           │                  # endCardPrompt, characterPrompts, resizePrompt, rephrasePrompt, characterDescribePrompt
 │   │           │                  # Validators: parseJson, reviewPlan, applyContinuity, numberPlan, reviewStyle, reviewCharacter
+│   │           │                  # NARRATIVES / Narrative / NarrativeId: storytelling presets (auto default, documentary, bedtime,
+│   │           │                  #   adventure, comedic, mystery, legend, personality, custom) consumed by directorSystem()
 │   │           │                  # No fal calls; returns strings only.
 │   │           ├── manual.ts      # Studio class: the step engine.
 │   │           │                  # ManualTask shape: key, stage, kind, title, hint, model, modelNote,
@@ -92,13 +95,29 @@ storycast/
 │   │           │                  #   refs (ordered, with notes), slot, asset, want, shape, helpers,
 │   │           │                  #   optional, render, block, shot, muted, done, warn.
 │   │           │                  # TaskHelper shape: title, note, model, prompt, promptPlaceholders.
-│   │           │                  # Studio methods: submit/skip/attach/sync/clear/setLine/demote/rescene/plainly/mute/confirmShot/build
+│   │           │                  # Studio methods: submit/skip/attach/sync/clear/setLine/demote/rescene/plainly/mute/confirmShot/build/changeCharacter
 │   │           │                  # Spec.checked: set by confirmShot(), reset when a shot is cleared.
+│   │           │                  # Studio.changeCharacter(newId, newName): updates cast/style, updates plan traits,
+│   │           │                  #   wipes sheet, hero, keyframes, shots, card, film, and clean while keeping script and audio.
+│   │           │                  # Studio.veoMode: true when rec.veo === true (set at project creation).
+│   │           │                  # Studio.veoVoiceDesc: plan.voice_desc (one English sentence the director writes once in the
+│   │           │                  #   script step, fitted to the character and the narration language), repeated verbatim
+│   │           │                  #   in every veoShotPrompt; falls back to gender/age/accent/tone of the chosen voice.
+│   │           │                  # Veo Mode behaviour: voiceTasks()→[]; shotTasks() uses veoShotPrompt();
+│   │           │                  #   "voice" stage omitted; "shots" unlocks after keyframes only;
+│   │           │                  #   "music" unlocks after script; kit() passes veo:true to renderKit().
 │   │           ├── pipeline.ts    # Model endpoint constants, prompt builder functions (re-exported),
 │   │           │                  # Spec type (with key, clip, checked, keep_sound, rescened, plain fields),
 │   │           │                  # timeline(), buildSpecs(), syncSpecs(), shotNeed(), filmLength(), musicLength()
+│   │           │                  # All timing functions accept an optional veo flag (default false):
+│   │           │                  #   veo=true → V-block duration from spec.clip.duration (not b.audio.duration)
+│   │           │                  # VEO = "google/veo-3" endpoint constant
+│   │           │                  # veoShotPrompt(): builds Veo 3 prompts with embedded narration/dialog,
+│   │           │                  #   spoken lines as `says: "<text>"` (always double-quoted), ends every prompt with "No background music."
 │   │           ├── render.ts      # renderKit(): produces ffmpeg commands, filter files, render.ps1, render.sh
 │   │           │                  # for the local edit step; also generates subtitles.ass/srt via subtitles.ts
+│   │           │                  # RenderSource.veo flag: if true, pulls audio from individual cut files
+│   │           │                  #   (narration is embedded in Veo clips) instead of separate narration tracks
 │   │           ├── store.ts       # IndexedDB v2 (films/blobs/keyval stores), saveRecord/loadRecord/allRecords,
 │   │           │                  # blobGet/blobPut, kvGet/kvPut, cacheGet/cacheSet
 │   │           ├── subtitles.ts   # ASS and SRT subtitle generation from script + narration durations
@@ -125,9 +144,11 @@ storycast/
 
 - **Manual workbench, not an orchestrator**: The browser never calls any AI endpoint. `studio/manual.ts` (`Studio` class) reads `FilmRecord.state` and returns a list of `ManualTask` objects describing what to do next. The user does the work outside the browser; results come back as files in a local folder or via drag-drop.
 - **Local media references**: Everything produced by the user is stored as a path relative to the project folder and referenced as a `local:<project>/<path>` string. `assets.ts` resolves these to object URLs on demand. Never pass a `local:` string directly to `<img src>` or `<video src>` — use `useMediaUrl(ref)` or the `Art` component from `lightbox.tsx`. In `Preview` inside `task-card.tsx` always build the ref as `` `local:${projectRoot}/${asset.path}` ``, not `local:${asset.path}` alone, because `asset.path` is relative to the project folder, not the root.
-- **Duration drives everything**: Timeline slot lengths, score duration, subtitle timing, and shot duration requests are all computed from measured narration and clip durations. `measure()` in `assets.ts` is the single source of truth.
+- **Duration drives everything**: Timeline slot lengths, score duration, subtitle timing, and shot duration requests are all computed from measured narration and clip durations. `measure()` in `assets.ts` is the single source of truth. In Veo Mode, V-block slot durations come from the measured clip (`spec.clip.duration`) since there is no separate narration file; `blockDuration()` accepts a `veo` flag for this.
+- **Two workflow modes**: Veo Mode (default, `rec.veo === true`) generates all shots via `google/veo-3` with narration embedded — no TTS, no separate lip-sync step, audio lives inside the clip. Standard Mode uses `minimax/h3-max/reference-to-video` + `minimax/h3-max/lip-sync/image-to-video` + `fal-ai/elevenlabs/tts/eleven-v3`. The mode is set once at project creation and stored on the `FilmRecord`; it cannot be changed mid-project.
 - **Prompts are joined, not split**: Every `ManualTask.prompt` combines the system prompt and the user prompt in one string, separated by `\n\n---\n\n`. There is no separate `system` field on `ManualTask` or `TaskHelper`. Use the `joined(system, user)` helper in `manual.ts` when building tasks.
 - **Idempotent steps**: Every step in `manual.ts` checks whether its output asset is already present before asking for anything. Dropping a file, using the folder binding, and resuming after a reload all follow the same path.
+- **Mid-project character change**: Users can switch narrator characters mid-project from `studio-panel.tsx` via `CharacterSwapDialog`. `Studio.changeCharacter(newId, newName)` updates character identifiers and style, updates the character traits in `plan.character`, and invalidates visual assets (model sheet, hero portrait, all keyframe images, animated clips, end card, rendered film) while preserving the script and audio narration.
 - **QC on V/tail shots**: Shot tasks for non-talking shots carry a `warn` when `spec.checked` is not set. The user visually inspects the result and clicks "Looks good" which calls `Studio.confirmShot(shot)`, setting `spec.checked = true` and clearing the warning. Redo resets `checked`.
 - **Navigation**: `studio-panel.tsx` gives every stage section an `id="stage-<key>"` and every task wrapper an `id="task-<key>"`. `SectionNav` renders a sticky left nav with these ids as targets, and an `IntersectionObserver` tracks which id is in the upper viewport to highlight the active item.
 - **Local edit**: `render.ts` generates the full ffmpeg command sequence and filter graphs from `timeline()` in `pipeline.ts`. The render scripts (`render.ps1`, `render.sh`) and filter files are written into the project folder; no fal service is involved.

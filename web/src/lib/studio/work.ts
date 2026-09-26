@@ -17,7 +17,7 @@ export type Work = {
 };
 
 /** How much there is to make by hand, so the length slider is an honest promise. */
-export function estimateWork(minutes: number, opts: { invent?: boolean; customStyle?: boolean; uploadedCharacter?: boolean } = {}): Work {
+export function estimateWork(minutes: number, opts: { invent?: boolean; customStyle?: boolean; uploadedCharacter?: boolean; veo?: boolean } = {}): Work {
   const [n, t] = shape(minutes);
   const v = n - t;
   const [vSpeech, tSpeech] = words(minutes).map((r) => {
@@ -27,8 +27,12 @@ export function estimateWork(minutes: number, opts: { invent?: boolean; customSt
   const asks = 1 + 1 + (opts.customStyle ? 1 : 0) + (opts.uploadedCharacter ? 1 : 0);
   const images = n + 1 + (opts.invent ? 2 : 0) + 1;
   const clips = n + 1;
+  const recordings = opts.veo ? 0 : n;
   const seconds = LEAD + v * (vSpeech + GAP) + t * (tSpeech + GAP) + TAIL_DUR + END_CARD;
-  return { blocks: n, talk: t, asks, images, recordings: n, clips, music: 1, total: asks + images + n + clips + 1, seconds };
+  return { blocks: n, talk: t, asks, images, recordings, clips, music: 1, total: asks + images + recordings + clips + 1, seconds };
 }
 
-export const workLine = (w: Work) => `${w.asks} answers · ${w.images} images · ${w.recordings} recordings · ${w.clips} shots · 1 score`;
+export const workLine = (w: Work) =>
+  w.recordings > 0
+    ? `${w.asks} answers · ${w.images} images · ${w.recordings} recordings · ${w.clips} shots · 1 score`
+    : `${w.asks} answers · ${w.images} images · ${w.clips} shots · 1 score (Veo Mode)`;

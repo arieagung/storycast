@@ -1,6 +1,6 @@
 import type { AssetInfo } from "./assets";
 import type { StyleFull } from "./data";
-import { slugify, type Block, type Given, type GivenVoice, type Plan } from "./director";
+import { slugify, type Block, type Given, type GivenVoice, type NarrativeId, type Plan } from "./director";
 import type { FilmRecord } from "./store";
 
 /* ------------------------------------------------------------------ *\
@@ -14,6 +14,7 @@ export const T2I = "openai/gpt-image-2.5/flare/text-to-image";
 export const EDIT = "openai/gpt-image-2.5/flare/edit";
 export const R2V = "minimax/h3-max/reference-to-video";
 export const LIPSYNC = "minimax/h3-max/lip-sync/image-to-video";
+export const VEO = "google/veo-3";
 export const TTS = "fal-ai/elevenlabs/tts/eleven-v3";
 export const MUSIC = "elevenlabs/music/v2.5";
 export const TRIM = "fal-ai/workflow-utilities/trim-video";
@@ -50,15 +51,36 @@ export const SHEET_CHECK_PROMPT =
 type Who = { name: string; traits: string; pronoun: string };
 export const charLine = (c: Who) => `${c.name.toUpperCase()}, ${c.traits}`;
 
-export function keyframePrompt(c: Who, anchor: string, styleRef: boolean, scene: string, withChar: boolean, talking: boolean) {
+/**
+ * Strips image aspect ratio / composition instructions (e.g. "widescreen 16:9 composition.") from prompt or anchor text.
+ */
+export function stripRatio(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/(?:,\s*|\.\s*)?widescreen\s+16:9\s+composition\.?/gi, "")
+    .replace(/(?:,\s*|\.\s*)?16:9\s+(?:composition|aspect\s+ratio|ratio)\.?/gi, "")
+    .replace(/(?:,\s*|\.\s*)?widescreen\s+composition\.?/gi, "")
+    .trim()
+    .replace(/,\s*$/, ".")
+    .replace(/\.\.+$/, ".")
+    .replace(/([^.!?])$/, "$1.");
+}
+
+export function keyframePrompt(c: Who, anchor: string, styleRef: boolean, scene: string, withChar: boolean, talking: boolean, prevKey = false) {
   const pron = c.pronoun || "its";
   if (!withChar) {
-    const ref = styleRef ? `Image 1 ${STYLE_REF_NOTE}. ` : "";
-    return `${ref}New film still, no characters in this frame. ${scene} No readable text anywhere. ${anchor}`;
+    // Without character: the style reference is the only image, so the scene is free to show
+    // whatever explains the line best (a cross-section, a close-up, the past) instead of the previous set.
+    const lead = styleRef ? `Image 1 ${STYLE_REF_NOTE}. ` : "";
+    return `${lead}New film still, no characters in this frame. ${scene} No readable text anywhere. ${anchor}`;
   }
+  // With character: Image 1 = model sheet, Image 2 = hero portrait, then prev keyframe?, then style ref?
   const talk = talking ? ` ${c.name} faces the camera in a medium close-up, talking warmly with ${pron} mouth open.` : "";
-  const ref = styleRef ? ` Image 3 ${STYLE_REF_NOTE}.` : "";
-  return `Image 1 and Image 2 show ${charLine(c)}. Keep ${pron} design exactly.${ref} New film still: ${scene}${talk} No readable text anywhere. ${anchor}`;
+  let n = 2; // sheet=1, hero=2
+  const extraParts: string[] = [];
+  if (prevKey) { n++; extraParts.push(` Image ${n} is the preceding shot: match its colour grade and rendering; keep its set only if this scene happens in the same place, otherwise paint the new setting the scene describes.`); }
+  if (styleRef) { n++; extraParts.push(` Image ${n} ${STYLE_REF_NOTE}.`); }
+  return `Image 1 and Image 2 show ${charLine(c)}. Keep ${pron} design exactly.${extraParts.join("")} New film still: ${scene}${talk} No readable text anywhere. ${anchor}`;
 }
 
 export function shotPrompt(c: Who, motion: string, b: { scene: string; action: string; camera?: string; sound?: string }, withChar: boolean) {
@@ -71,6 +93,57 @@ export function shotPrompt(c: Who, motion: string, b: { scene: string; action: s
       `itself, never a character sheet, a lineup or several copies of ${c.name}. Nobody speaks: ${c.name}'s mouth stays closed. ${tail}`
     );
   return `Image 1 is the opening frame of this shot: ${b.scene} ${body} ${tail}`;
+}
+
+/** Drops trailing periods and spaces so a fragment can be closed with exactly one period. */
+export const clause = (s: string) => s.trim().replace(/[.\s]+$/, "");
+
+/** A fragment closed with exactly one period (kept as is when it already ends in ! or ?). */
+const sentence = (s: string) => {
+  const t = clause(s);
+  return /[!?]$/.test(t) ? t : `${t}.`;
+};
+
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** The spoken line in double quotes; inner double quotes become single quotes so the line stays one quoted span. */
+export const spoken = (s: string) => `"${s.trim().replace(/"/g, "'")}"`;
+
+/**
+ * Veo Mode shot prompt (image-to-video, the keyframe is the first frame).
+ * Following Google's Veo image-to-video guidance it prompts for motion only: the keyframe already
+ * carries the subject, set, lighting and style, so none of that is described again.
+ * The narrator is introduced once by name and a short generic tag ("Patch, the felt bear"),
+ * then referred to by name only. The camera move is its own sentence.
+ * V blocks = off-screen voiceover; T blocks = on-camera lip-synced speech; an empty text = nobody speaks (tail).
+ * The spoken line is always wrapped in double quotes after a colon.
+ * voiceDesc is one sentence repeated verbatim in every shot so the voice stays the same across clips.
+ * Always ends with "No background music." so individual clips can be merged cleanly.
+ */
+export function veoShotPrompt(
+  c: { name: string; tag?: string },
+  motion: string,
+  b: { action: string; camera?: string; sound?: string; text: string },
+  withChar: boolean,
+  voiceDesc: string,
+  talking: boolean,
+): string {
+  const tag = clause(c.tag ?? "");
+  const out: string[] = [];
+  if (talking) {
+    out.push(`${tag ? `${c.name}, ${tag},` : c.name} faces the camera in a medium close-up and talks.`);
+  } else if (withChar && tag) {
+    out.push(`${cap(tag)} is ${c.name}.`);
+  }
+  if (clause(b.action)) out.push(sentence(b.action));
+  if (clause(b.camera ?? "")) out.push(`Camera: ${sentence(b.camera!)}`);
+  if (clause(motion)) out.push(sentence(motion));
+  const voice = sentence(voiceDesc);
+  if (!clause(b.text)) out.push("Nobody speaks.");
+  else if (talking) out.push(`${c.name} says: ${spoken(b.text)}`, `Voice: ${voice}`, "Mouth synced naturally to the words.");
+  else out.push(`Off-screen narrator. Voice: ${voice}`, `The narrator says: ${spoken(b.text)}`);
+  out.push(`Sound: ${sentence(b.sound || "soft ambience")}`, "No background music.");
+  return out.join(" ");
 }
 
 export function endCardPrompt(title: string, subtitle: string, anchor: string) {
@@ -125,6 +198,10 @@ export type JobInput = {
   character_name: string;
   character_id: string;
   voice: GivenVoice | Record<string, never>;
+  /** Storytelling style id (see NARRATIVES in director.ts); "auto" when missing. */
+  narrative?: NarrativeId;
+  /** Free text for the "custom" storytelling style. */
+  narrative_text?: string;
 };
 
 export type Spec = {
@@ -203,15 +280,20 @@ export function newRecord(input: JobInput): FilmRecord {
    soon as those files exist.
 \* ------------------------------------------------------------------ */
 
-export const blockDuration = (b: Block, specs: Spec[]) =>
-  b.kind === "T" ? (specs.find((s) => s.shot === b.shot)?.clip?.duration ?? 0) : (b.audio?.duration ?? 0);
+/**
+ * Duration of one block in the cut.
+ * Standard mode: T = clip duration, V = narration audio duration.
+ * Veo mode: both T and V use the clip duration (audio is embedded in the clip).
+ */
+export const blockDuration = (b: Block, specs: Spec[], veo = false) =>
+  b.kind === "T" || veo ? (specs.find((s) => s.shot === b.shot)?.clip?.duration ?? 0) : (b.audio?.duration ?? 0);
 
 export type Cut = { shot: string; start: number; dur: number; talking: boolean };
 export type Timeline = { starts: Record<string, number>; segments: Cut[]; pictureEnd: number; total: number };
 
-export function timeline(plan: Plan, specs: Spec[]): Timeline {
+export function timeline(plan: Plan, specs: Spec[], veo = false): Timeline {
   const blocks = plan.blocks;
-  const length: Record<string, number> = Object.fromEntries(blocks.map((b) => [b.id, blockDuration(b, specs)]));
+  const length: Record<string, number> = Object.fromEntries(blocks.map((b) => [b.id, blockDuration(b, specs, veo)]));
   let t = LEAD;
   const starts: Record<string, number> = {};
   for (const b of blocks) {
@@ -240,15 +322,20 @@ export function timeline(plan: Plan, specs: Spec[]): Timeline {
 }
 
 /** Length used to order the score, before any shot exists. */
-export const filmLength = (plan: Plan) => LEAD + sum(plan.blocks.map((b) => (b.audio?.duration ?? 0) + GAP)) + TAIL_DUR + END_CARD;
+export const filmLength = (plan: Plan, veo = false) =>
+  veo
+    ? LEAD + plan.blocks.length * (8 + GAP) + TAIL_DUR + END_CARD  // estimate: 8 s avg per clip
+    : LEAD + sum(plan.blocks.map((b) => (b.audio?.duration ?? 0) + GAP)) + TAIL_DUR + END_CARD;
 
-export const musicLength = (plan: Plan) => Math.min(600_000, ms(Math.max(30, filmLength(plan) + 3)));
+export const musicLength = (plan: Plan, veo = false) => Math.min(600_000, ms(Math.max(30, filmLength(plan, veo) + 3)));
 
 /** The length to ask a video model for, per shot. */
-export function shotNeed(plan: Plan, spec: Spec, index: number): number {
+export function shotNeed(plan: Plan, spec: Spec, index: number, veo = false): number {
   if (spec.bi < 0) return TAIL_DUR;
   const b = plan.blocks[spec.bi];
-  return (b.audio?.duration ?? 0) + GAP + (index === 0 ? LEAD : 0);
+  // In Veo mode we don't have narration audio yet; use a sensible estimate from word count.
+  const dur = veo ? Math.max(5, Math.ceil(b.text.split(/\s+/).length / 2.5) + 0.5) : (b.audio?.duration ?? 0);
+  return dur + GAP + (index === 0 ? LEAD : 0);
 }
 
 export function buildSpecs(plan: Plan): Spec[] {

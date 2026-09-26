@@ -17,6 +17,7 @@ export type AgentContext =
       characterUrl: string;
       characterName: string;
       voice: { voice_id: string; name: string } | null;
+      narrative: D.Narrative;
     }
   | { kind: "film"; film: Film };
 
@@ -46,7 +47,7 @@ const fence = (lang: string, body: string) => ["```" + lang, body, "```"];
 async function resolve(ctx: AgentContext | null, data: StudioData) {
   let topic = "";
   let minutes = 1;
-  let lang = "en";
+  let lang = "id";
   let look: Look | null = null;
   let customLook = "";
   let narrator: Cast | null = null;
@@ -54,10 +55,11 @@ async function resolve(ctx: AgentContext | null, data: StudioData) {
   let voice: VoiceInfo | null = null;
   let voiceNote = "";
   let reference: Film | null = null;
+  let narrative: D.Narrative = { id: "auto" };
 
   if (ctx?.kind === "film") {
     reference = ctx.film;
-    lang = ctx.film.lang || "en";
+    lang = ctx.film.lang || "id";
     minutes = ctx.film.minutes ?? Math.max(1, Math.round(ctx.film.duration / 60));
     narrator = data.characters.find((c) => c.id === ctx.film.character_id) ?? null;
     look = data.styles.find((s) => s.id === (narrator?.style ?? ctx.film.style)) ?? null;
@@ -71,10 +73,11 @@ async function resolve(ctx: AgentContext | null, data: StudioData) {
     if (!narrator && ctx.style === "custom") customLook = ctx.styleUrl;
     if (!narrator && ctx.characterUrl) uploaded = { url: ctx.characterUrl, name: ctx.characterName };
     if (ctx.voice) voice = ctx.voice;
+    narrative = ctx.narrative;
   }
 
   if (narrator && !voice) voice = { ...narrator.voice };
-  return { topic, minutes, lang, look, customLook, narrator, uploaded, voice, voiceNote, reference };
+  return { topic, minutes, lang, look, customLook, narrator, uploaded, voice, voiceNote, reference, narrative };
 }
 
 export async function agentSummary(ctx: AgentContext | null) {
@@ -113,7 +116,7 @@ export async function agentBrief(ctx: AgentContext | null): Promise<string> {
   const who = given ?? { name: "{NAME}", traits: "{TRAITS}", pronoun: "{PRONOUN}" };
   const styleRef = r.customLook || (r.look?.ref ? abs(r.look.ref) : "");
   const hasRef = Boolean(styleRef) || !r.look;
-  const system = await D.directorSystem(look, r.minutes, r.lang, given, r.voice);
+  const system = await D.directorSystem(look, r.minutes, r.lang, given, r.voice, false, r.narrative);
   const continuity = await D.continuityPrompt("{SCRIPT_JSON}", r.minutes, r.lang, Math.max(1, Math.min(Math.floor(blocks / 5), 64 - blocks)));
   const [sheetPrompt, heroPrompt] = P.characterPrompts(`${who.name.toUpperCase()}, ${who.traits}`, look.anchor);
   const L: string[] = [];
@@ -265,7 +268,7 @@ export async function agentBrief(ctx: AgentContext | null): Promise<string> {
     "",
     `One per block plus the tail (the tail always has the narrator). \`${P.EDIT}\`, \`image_size: ${json(P.WIDE)}\`, \`quality: "high"\`, all in parallel.`,
     `- With the narrator (\`character_in_shot\`, always for T): \`image_urls: ${urlsWith}\`.`,
-    `- Without: \`image_urls: [${hasRef ? "style reference" : "model sheet"}]\`.`,
+    hasRef ? "- Without: `image_urls: [style reference]`." : `- Without: no reference images, \`${P.T2I}\`.`,
     "",
     "V block with the narrator, and the tail:",
     ...fence("text", P.keyframePrompt(who, look.anchor, hasRef, "{SCENE}", true, false)),

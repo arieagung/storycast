@@ -275,7 +275,7 @@ export function TaskCard({ task, actions, projectRoot }: { task: ManualTask; act
               ))}
             </div>
           ) : null}
-          {task.params && (
+          {!task.veo && task.params && (
             <Field
               title="Parameters"
               body={Object.entries(task.params)

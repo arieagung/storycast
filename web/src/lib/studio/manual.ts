@@ -76,6 +76,8 @@ export type ManualTask = {
   muted?: boolean;
   done: boolean;
   warn?: string;
+  /** When true, indicates Veo Mode is active for this task. */
+  veo?: boolean;
 };
 
 export type Stage = {
@@ -197,12 +199,12 @@ export class Studio {
   get narrator(): Given {
     const p = this.plan;
     if (p) return { name: p.character.name, traits: p.character.traits, pronoun: p.character.pronoun };
-    if (this.cast) return { name: this.cast.name, traits: this.cast.traits, pronoun: this.cast.pronoun };
+    if (this.cast) return { name: this.rec.character_name || this.cast.name, traits: this.cast.traits, pronoun: this.cast.pronoun };
     return this.st.narrator ?? { name: "Narrator", traits: "", pronoun: "its" };
   }
 
   get given(): Given | null {
-    if (this.cast) return { name: this.cast.name, traits: this.cast.traits, pronoun: this.cast.pronoun, personality: this.cast.personality };
+    if (this.cast) return { name: this.rec.character_name || this.cast.name, traits: this.cast.traits, pronoun: this.cast.pronoun, personality: this.cast.personality };
     return this.st.narrator ?? null;
   }
 
@@ -215,6 +217,37 @@ export class Studio {
 
   get language() {
     return this.data.languages.find((l) => l.code === this.rec.lang);
+  }
+
+  /** Storytelling style chosen at creation; projects without one use "auto". */
+  get narrative(): D.Narrative {
+    const id = (this.rec.narrative as D.NarrativeId | undefined) || "auto";
+    return { id, text: this.rec.narrative_text || undefined };
+  }
+
+  /** True when this project was created with Veo Mode enabled. */
+  get veoMode(): boolean {
+    return this.rec.veo === true;
+  }
+
+  /**
+   * The style anchor sentence used across prompts.
+   * In Veo Mode, image ratio instructions (e.g. "widescreen 16:9 composition.") are stripped.
+   */
+  get styleAnchor(): string {
+    const raw = this.style?.anchor ?? "";
+    return this.veoMode ? P.stripRatio(raw) : raw;
+  }
+
+  /**
+   * A short, stable voice description string to paste into every Veo shot prompt.
+   * Keeps the narrator voice consistent across clips.
+   * Comes from the script's "voice_desc" (written once for this character and language).
+   * Older scripts without it fall back to "[gender] narrator, [age], [accent], [tone/traits]." from the chosen voice.
+   */
+  get veoVoiceDesc(): string {
+    if (this.plan?.voice_desc) return this.plan.voice_desc;
+    return "A warm, natural narrator voice.";
   }
 
   /* --- persistence ------------------------------------------------ */
@@ -288,7 +321,7 @@ export class Studio {
         hint: "Show your uploaded illustration to a model that can read images and paste its answer back. The 'anchor' sentence it returns is appended to every image prompt in the film.",
         model: P.VISION,
         modelNote: `${D.DIRECTOR_MODEL} (vision)`,
-        prompt: joined(D.STYLE_SYSTEM, D.STYLE_PROMPT),
+        prompt: joined(D.STYLE_SYSTEM, D.stylePrompt(this.veoMode)),
         params: { model: D.DIRECTOR_MODEL, max_tokens: 6000, reasoning: true },
         refs: styleImage ? [{ n: 1, label: "Your illustration", url: styleImage, kind: "image" }] : [],
         shape: '{"label": "", "anchor": "", "motion": "", "character_hint": "", "palette": {"bg": "#…", "text": "#…", "accent": "#…"}}',
@@ -331,7 +364,7 @@ export class Studio {
         params: { model: D.DIRECTOR_MODEL, max_tokens: Math.min(64000, 6000 + 900 * blocks), reasoning: true },
         refs: [],
         shape:
-          '{"title": "", "subtitle": "", "slug": "", "character": {"name": "", "traits": "", "pronoun": ""}, "voice_id": "", "music_prompt": "", ' +
+          `{"title": "", "subtitle": "", "slug": "", "character": {"name": "", "traits": "", "pronoun": ""${this.veoMode ? ', "tag": ""' : ""}}, ${this.veoMode ? '"voice_desc": "", ' : '"voice_id": "", '}"music_prompt": "", ` +
           '"blocks": [{"kind": "V|T", "text": "", "place": "", "scene": "", "character_in_shot": true, "action": "", "camera": "", "sound": ""}], ' +
           '"tail": {"scene": "", "action": "", "camera": "", "sound": ""}}',
         done: !!this.plan,
@@ -370,8 +403,7 @@ export class Studio {
 
   private characterTasks(): ManualTask[] {
     if (this.cast?.sheet && this.cast.hero) return [];
-    const style = this.style!;
-    const [sheet, hero] = P.characterPrompts(P.charLine(this.narrator), style.anchor);
+    const [sheet, hero] = P.characterPrompts(P.charLine(this.narrator), this.styleAnchor);
     const refs: TaskRef[] = [];
     if (this.rec.character_url) refs.push({ n: refs.length + 1, label: "Your character", url: this.rec.character_url, kind: "image", note: P.CHARACTER_REF_NOTE });
     if (this.styleRef) refs.push({ n: refs.length + 1, label: "Style reference", url: this.styleRef, kind: "image", note: P.STYLE_REF_NOTE });
@@ -415,6 +447,8 @@ export class Studio {
   }
 
   private voiceTasks(): ManualTask[] {
+    // In Veo mode the spoken audio is embedded inside each generated shot clip — skip TTS entirely.
+    if (this.veoMode) return [];
     const p = this.plan!;
     const v = this.voice;
     return p.blocks.map((b) => {
@@ -461,30 +495,40 @@ export class Studio {
   }
 
   private keyframeTasks(): ManualTask[] {
-    const style = this.style!;
     const who = this.narrator;
     const hasStyleRef = !!this.styleRef;
-    return this.specs.map((spec) => {
+    return this.specs.map((spec, i) => {
       const withChar = spec.with_char && !spec.plain;
+      // Previous shot's keyframe for visual continuity (only when it exists)
+      const prevSpec = i > 0 ? this.specs[i - 1] : null;
+      const prevKeyUrl = prevSpec ? this.keyRef(prevSpec.shot) : undefined;
+      const hasPrevKey = !!prevKeyUrl;
       const refs: TaskRef[] = [];
       if (withChar) {
         refs.push({ n: 1, label: "Model sheet", url: this.sheetRef, kind: "image" });
         refs.push({ n: 2, label: "Hero portrait", url: this.heroRef, kind: "image" });
-        if (hasStyleRef) refs.push({ n: 3, label: "Style reference", url: this.styleRef, kind: "image", note: P.STYLE_REF_NOTE });
+        if (hasPrevKey) refs.push({ n: 3, label: `Prev keyframe (${prevSpec!.shot})`, url: prevKeyUrl, kind: "image", note: "preceding shot — match its colour grade, lighting and background" });
+        if (hasStyleRef) refs.push({ n: refs.length + 1, label: "Style reference", url: this.styleRef, kind: "image", note: P.STYLE_REF_NOTE });
       } else if (hasStyleRef) {
+        // No narrator: only the style reference, so the frame can show whatever explains the line.
         refs.push({ n: 1, label: "Style reference", url: this.styleRef, kind: "image", note: P.STYLE_REF_NOTE });
-      } else if (this.sheetRef) {
-        refs.push({ n: 1, label: "Model sheet", url: this.sheetRef, kind: "image" });
       }
-      const plainPrompt = `${spec.scene} No readable text anywhere. ${style.anchor}`;
+      const plainPrompt = `${spec.scene} No readable text anywhere. ${this.styleAnchor}`;
+      const hint = withChar
+        ? hasPrevKey
+          ? "The narrator has to look exactly like the model sheet (Images 1 & 2). Image 3 is the preceding shot: match its colour grade, and its set only when the scene stays in the same place."
+          : "The narrator has to look exactly like the model sheet; that is what Image 1 and 2 are for."
+        : hasStyleRef
+          ? "No narrator in this frame. Image 1 is only the style reference; the scene is free to show whatever explains the line."
+          : "No narrator in this frame and no reference image; the style comes from the prompt alone.";
       return {
         key: `key:${spec.shot}`,
         stage: "keyframes",
         kind: "image",
         title: `${spec.shot}${spec.bi < 0 ? " · final shot" : spec.talking ? " · on camera" : ""}`,
-        hint: withChar ? "The narrator has to look exactly like the model sheet; that is what Image 1 and 2 are for." : "No narrator in this frame.",
-        model: spec.plain ? P.T2I : P.EDIT,
-        prompt: spec.plain ? plainPrompt : P.keyframePrompt(who, style.anchor, hasStyleRef, spec.scene, withChar, spec.talking),
+        hint,
+        model: spec.plain || (!withChar && !hasStyleRef) ? P.T2I : P.EDIT,
+        prompt: spec.plain ? plainPrompt : P.keyframePrompt(who, this.styleAnchor, hasStyleRef, spec.scene, withChar, spec.talking, hasPrevKey),
         params: { image_size: P.WIDE, quality: "high" },
         refs: spec.plain ? [] : refs,
         slot: keySlot(spec.shot),
@@ -522,6 +566,55 @@ export class Studio {
       const talking = spec.talking;
       const block = spec.bi >= 0 ? p.blocks[spec.bi] : null;
       const withChar = spec.with_char && !spec.plain;
+
+      // ── Veo Mode: all shots (V, T, tail) are generated by Veo 3 with embedded audio ──
+      if (this.veoMode) {
+        const tail = spec.bi < 0;
+        // Motion only: the keyframe is the first frame, so the scene is not described again.
+        const beat = tail
+          ? { action: `${P.clause(p.tail.action ?? "")}.${P.PULL_BACK}`, camera: "slow pull-back", sound: p.tail.sound, text: "" }
+          : { action: block!.action, camera: block!.camera, sound: block!.sound, text: block!.text };
+        const veoWho = { name: who.name, tag: p.character.tag };
+        const need = P.shotNeed(p, spec, i, true);
+        const seconds = P.shotDuration(need);
+        // In Veo Mode, only Keyframe is used as reference (no Hero portrait reference)
+        const refs: TaskRef[] = [{ n: 1, label: "Keyframe", url: this.keyRef(spec.shot), kind: "image" }];
+        const wordCount = beat.text ? beat.text.split(/\s+/).length : 0;
+        return {
+          key: `shot:${spec.shot}`,
+          stage: "shots",
+          kind: "video",
+          title: `${spec.shot}${tail ? " · final shot" : talking ? " · on camera" : ""}`,
+          hint: tail
+            ? "Veo Mode: the final pull-back shot. No spoken line; keep 'no background music' in the prompt."
+            : talking
+              ? `Veo Mode: ${who.name} speaks on camera — lip-sync is embedded. Use first-frame mode (keyframe as reference).`
+              : "Veo Mode: voice-over narration is embedded in the clip. Use first-frame or reference mode.",
+          model: P.VEO,
+          modelNote: "Veo 3 · first-frame or reference-to-video mode",
+          prompt: P.veoShotPrompt(veoWho, style.motion, beat, withChar || tail, this.veoVoiceDesc, talking),
+          params: { aspect_ratio: "16:9", resolution: P.RES, duration: seconds },
+          refs,
+          slot: shotSlot(spec.shot),
+          asset: spec.clip,
+          want: {
+            seconds,
+            note: wordCount > 0
+              ? `${seconds} s asked; ~${wordCount} words at 2-3 wps ≈ ${Math.ceil(wordCount / 2.5)}-${Math.ceil(wordCount / 2)}`
+              : `${seconds} s`,
+          },
+          shot: spec.shot,
+          done: !!spec.clip?.duration,
+          warn:
+            spec.clip?.duration !== undefined && spec.clip.duration + 0.05 < need
+              ? `${spec.clip.duration.toFixed(1)} s is shorter than the ${P.r3(need)} s slot; the last frame will be held to fill it`
+              : spec.clip && !spec.checked
+                ? "Check the result: if it shows a model-sheet layout rather than a real scene, click Redo."
+                : undefined,
+        } satisfies ManualTask;
+      }
+
+      // ── Standard Mode ──────────────────────────────────────────────────────────────────
       if (talking && block) {
         return {
           key: `shot:${spec.shot}`,
@@ -587,7 +680,7 @@ export class Studio {
 
   private musicTasks(): ManualTask[] {
     const p = this.plan!;
-    const length = P.musicLength(p);
+    const length = P.musicLength(p, this.veoMode);
     return [
       {
         key: "music",
@@ -601,7 +694,7 @@ export class Studio {
         refs: [],
         slot: SLOTS.music,
         asset: this.st.music,
-        want: { seconds: Math.round(length / 1000), note: `the film runs about ${Math.round(P.filmLength(p))} s` },
+        want: { seconds: Math.round(length / 1000), note: `the film runs about ${Math.round(P.filmLength(p, this.veoMode))} s` },
         done: !!this.st.music,
       },
     ];
@@ -618,7 +711,7 @@ export class Studio {
         title: "End card",
         hint: "The final keyframe with the title lettered into the calm space at the top. It is also the film's poster.",
         model: P.EDIT,
-        prompt: P.endCardPrompt(p.title, p.subtitle, this.style!.anchor),
+        prompt: P.endCardPrompt(p.title, p.subtitle, this.styleAnchor),
         params: { image_size: P.FRAME, quality: "high" },
         refs: [{ n: 1, label: `Keyframe ${tail}`, url: this.keyRef(tail), kind: "image" }],
         slot: SLOTS.card,
@@ -674,21 +767,36 @@ export class Studio {
   async tasks(): Promise<ManualTask[]> {
     const out: ManualTask[] = [...this.readTasks()];
     const ready = out.every((t) => t.done);
-    if (!this.style) return out;
+    if (!this.style) return this.finalizeTasks(out);
 
-    const system = await D.directorSystem(this.style, this.rec.minutes, this.rec.lang, this.given, this.voice);
+    const system = await D.directorSystem(this.style, this.rec.minutes, this.rec.lang, this.given, this.voice, this.veoMode, this.narrative);
     if (this.plan) this.continuity = await D.continuityPrompt(D.continuityScript(this.plan.blocks), this.rec.minutes, this.rec.lang, D.mostInserts(this.plan.blocks.length));
-    if (!ready) return out;
+    if (!ready) return this.finalizeTasks(out);
     out.push(...this.scriptTasks(system));
-    if (!this.plan) return out;
+    if (!this.plan) return this.finalizeTasks(out);
     out.push(...this.characterTasks(), ...this.voiceTasks(), ...this.keyframeTasks(), ...this.shotTasks(), ...this.musicTasks(), ...this.endCardTasks(), ...this.editTasks());
-    return out;
+    return this.finalizeTasks(out);
+  }
+
+  private finalizeTasks(tasks: ManualTask[]): ManualTask[] {
+    const veo = this.veoMode;
+    return tasks.map((t) => {
+      if (veo) {
+        const { params: _params, ...rest } = t;
+        return { ...rest, veo: true };
+      }
+      return t;
+    });
   }
 
   /** The board the UI draws: every stage, what it is waiting for and why. */
   stages(tasks?: ManualTask[]): Stage[] {
     const all = tasks ?? this.cached ?? [];
-    const keys: StageKey[] = ["read", "script", "character", "voice", "keyframes", "shots", "music", "endcard", "edit"];
+    const veo = this.veoMode;
+    // In Veo mode there are no voice tasks, so skip the voice stage entirely.
+    const keys: StageKey[] = veo
+      ? ["read", "script", "character", "keyframes", "shots", "music", "endcard", "edit"]
+      : ["read", "script", "character", "voice", "keyframes", "shots", "music", "endcard", "edit"];
     const of = (k: StageKey) => all.filter((t) => t.stage === k);
     const ready = (k: StageKey) => {
       const list = of(k).filter((t) => !t.optional);
@@ -699,8 +807,12 @@ export class Studio {
       character: [!!this.plan, "waiting for the script"],
       voice: [!!this.plan, "waiting for the script"],
       keyframes: [!!this.plan && (ready("character") || !of("character").length), "waiting for the model sheet and the hero portrait"],
-      shots: [ready("keyframes") && ready("voice"), "waiting for the keyframes and the narration"],
-      music: [ready("voice"), "waiting for the narration, which sets the length"],
+      shots: this.veoMode
+        ? [ready("keyframes"), "waiting for the keyframes"]
+        : [ready("keyframes") && ready("voice"), "waiting for the keyframes and the narration"],
+      music: this.veoMode
+        ? [!!this.plan, "waiting for the script"]
+        : [ready("voice"), "waiting for the narration, which sets the length"],
       endcard: [ready("keyframes"), "waiting for the final keyframe"],
       edit: [ready("shots") && ready("music") && ready("endcard"), "waiting for the shots, the score and the end card"],
     };
@@ -756,7 +868,7 @@ export class Studio {
       this.st.narrator = D.reviewCharacter(parsed, this.rec.character_name || "");
       this.log("read", `Narrator: ${this.st.narrator.name}`);
     } else if (key === "script") {
-      const { plan, warnings } = await D.reviewPlan(parsed, { minutes: this.rec.minutes, character: this.given, voice: this.voice });
+      const { plan, warnings } = await D.reviewPlan(parsed, { minutes: this.rec.minutes, character: this.given, voice: this.voice, veo: this.veoMode });
       D.numberPlan(plan);
       this.st.plan = plan;
       this.st.specs = P.buildSpecs(plan);
@@ -928,6 +1040,62 @@ export class Studio {
     await this.save();
   }
 
+  /* --- swap character mid-project -------------------------------- */
+
+  /**
+   * Replaces the narrator with a different preset cast member (or clears to "invent").
+   * Drops all character-dependent assets: sheet, hero, every keyframe, every shot, end card, and the
+   * assembled film. Script and narration audio are kept because they do not depend on the visual look.
+   */
+  async changeCharacter(newId: string, newName: string): Promise<void> {
+    const newCast = newId ? (this.data.characters.find((c) => c.id === newId) ?? null) : null;
+
+    // Update identity fields on the record and the instance
+    this.cast = newCast;
+    this.rec.character_id = newId;
+    this.rec.character_name = newName;
+    this.rec.character_url = "";
+
+    // Preset characters force their own style; mirror what the constructor does
+    if (newCast) {
+      this.rec.style = newCast.style;
+      const preset = this.data.styles.find((s) => s.id === newCast.style);
+      this.style = this.st.style = preset;
+      this.styleRef = preset?.ref ?? "";
+      this.rec.style_label = preset?.label ?? newCast.style;
+    }
+
+    // Update plan's character block so prompts generated later use the new traits
+    if (this.plan && newCast) {
+      this.plan.character.name = newName || newCast.name;
+      this.plan.character.traits = newCast.traits;
+      this.plan.character.pronoun = newCast.pronoun;
+    }
+
+    // Wipe describe-character result (only exists for custom-uploaded characters)
+    this.st.narrator = undefined;
+
+    // Wipe character visuals — sheet and hero images are now wrong
+    this.st.sheet = undefined;
+    this.st.hero = undefined;
+
+    // Wipe every keyframe and shot that was built with the old character
+    for (const spec of this.specs) {
+      spec.key = undefined;
+      spec.clip = undefined;
+      spec.checked = undefined;
+    }
+
+    // Wipe end card and the assembled film
+    this.st.card = undefined;
+    this.st.film = undefined;
+    this.st.clean = undefined;
+    this.st.built = undefined;
+
+    this.log("character", `Character changed to ${newName || newCast?.name || "new character"}`);
+    await this.save();
+  }
+
   /* --- the edit --------------------------------------------------- */
 
   kit(): RenderKit {
@@ -936,7 +1104,10 @@ export class Studio {
     const shots: Record<string, string> = {};
     for (const s of this.specs) if (s.clip) shots[s.shot] = s.clip.path;
     const narration: Record<string, string> = {};
-    for (const b of p.blocks) if (b.audio) narration[b.id] = b.audio.path;
+    // In Veo mode narration is embedded in each shot clip — no separate audio files.
+    if (!this.veoMode) {
+      for (const b of p.blocks) if (b.audio) narration[b.id] = b.audio.path;
+    }
     return renderKit({
       plan: p,
       specs: this.specs,
@@ -947,6 +1118,7 @@ export class Studio {
       font: this.language?.font ?? "Nunito",
       accent: P.namedColor(this.style?.palette?.accent ?? "#f0a45a"),
       lang: this.rec.lang,
+      veo: this.veoMode,
     });
   }
 

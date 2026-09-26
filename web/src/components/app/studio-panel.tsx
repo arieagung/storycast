@@ -1,11 +1,12 @@
 import { AnimatePresence, motion } from "motion/react";
-import { Check, Clapperboard, Download, FileCode2, Lock, Mic, Share2, Terminal } from "lucide-react";
+import { Check, Clapperboard, Download, FileCode2, Lock, Mic, Share2, Terminal, UserRound } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TodoList, type TodoItem } from "@/components/agents/todo-list";
 import { FilmPlayer } from "@/components/app/film-player";
 import { FolderBar } from "@/components/app/folder-bar";
 import { downloadFile } from "@/components/app/lightbox";
 import { CopyButton, TaskCard } from "@/components/app/task-card";
+import { CharacterSwapDialog } from "@/components/app/character-swap-dialog";
 import { Button } from "@/components/motion/button/base";
 import { api, clock } from "@/lib/api";
 import { EASE_OUT } from "@/lib/ease";
@@ -218,6 +219,8 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
   const [found, setFound] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [swapOpen, setSwapOpen] = useState(false);
+  const [config, setConfig] = useState<Awaited<ReturnType<typeof api.config>> | null>(null);
   const { state: folder } = useFolder();
   const busy = useRef(false);
 
@@ -248,6 +251,7 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
         await draw(s);
       })
       .catch((e) => live && setError(e instanceof Error ? e.message : String(e)));
+    api.config().then((c) => { if (live) setConfig(c); }).catch(() => {});
     return () => {
       live = false;
     };
@@ -313,6 +317,10 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
   const result = studio?.st.film ? studio.result() : null;
   const events = (studio?.rec.events ?? []) as { t: number; stage: string; msg: string }[];
 
+  const onChangeCharacter = async (characterId: string, characterName: string) => {
+    await studio!.changeCharacter(characterId, characterName);
+    await refresh();
+  };
   // Track which section/task is currently visible for the nav highlight.
   const [activeKey, setActiveKey] = useState<string | null>(null);
   useEffect(() => {
@@ -345,6 +353,7 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
     );
 
   return (
+    <>
     <motion.section
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
@@ -359,8 +368,20 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
             {studio.rec.style_label} · {studio.rec.minutes} min · {done} of {total} steps done
           </p>
         </div>
-        <div className="h-1.5 w-full max-w-48 overflow-hidden rounded-full bg-muted sm:w-48">
-          <motion.div className="h-full rounded-full bg-primary" animate={{ width: `${total ? (done / total) * 100 : 0}%` }} transition={{ duration: 0.4, ease: EASE_OUT }} />
+        <div className="flex flex-col items-end gap-2">
+          <div className="h-1.5 w-full max-w-48 overflow-hidden rounded-full bg-muted sm:w-48">
+            <motion.div className="h-full rounded-full bg-primary" animate={{ width: `${total ? (done / total) * 100 : 0}%` }} transition={{ duration: 0.4, ease: EASE_OUT }} />
+          </div>
+          {config && (
+            <button
+              type="button"
+              onClick={() => setSwapOpen(true)}
+              className="flex items-center gap-1.5 rounded-full border border-border bg-background/50 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground"
+            >
+              <UserRound className="size-3" />
+              {studio.narrator.name}
+            </button>
+          )}
         </div>
       </div>
 
@@ -509,5 +530,18 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
 
       {error && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[11.5px] text-destructive">{error}</p>}
     </motion.section>
+
+    {config && (
+      <CharacterSwapDialog
+        open={swapOpen}
+        onOpenChange={setSwapOpen}
+        config={config}
+        lang={studio.rec.lang}
+        currentId={studio.rec.character_id ?? ""}
+        currentName={studio.rec.character_name ?? ""}
+        onConfirm={onChangeCharacter}
+      />
+    )}
+  </>
   );
 }

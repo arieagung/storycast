@@ -2,6 +2,7 @@ import { assetRef, keepAsset, IMAGE_EXTS } from "@/lib/studio/assets";
 import { studioData, seedFilms } from "@/lib/studio/data";
 import { Studio } from "@/lib/studio/manual";
 import { newRecord } from "@/lib/studio/pipeline";
+import type { NarrativeId } from "@/lib/studio/director";
 import { allRecords, deleteRecord, loadRecord, saveRecord, type FilmRecord } from "@/lib/studio/store";
 import * as voices from "@/lib/studio/voices";
 
@@ -91,6 +92,12 @@ export type NewJob = {
   character_name: string;
   character_id: string;
   voice: Voice | null;
+  /** When true, use Veo Mode: each shot is generated with embedded narration audio (no separate TTS step). */
+  veo?: boolean;
+  /** Storytelling style, chosen separately from the character. Defaults to "auto". */
+  narrative?: NarrativeId;
+  /** Free text used when narrative is "custom". */
+  narrative_text?: string;
 };
 
 export type Voice = {
@@ -242,9 +249,12 @@ export const api = {
       character_name: body.character_name.trim(),
       character_id: body.character_id,
       voice: v?.voice_id ? { voice_id: v.voice_id, name: v.name, gender: v.gender, age: v.age, accent: v.accent, description: v.description } : {},
+      narrative: body.narrative ?? "auto",
+      narrative_text: body.narrative === "custom" ? (body.narrative_text ?? "").trim() : "",
     });
     if (!body.character_id && style === "custom" && body.styleFile) rec.style_url = await keepInput(rec.project, "style", body.styleFile);
     if (!body.character_id && body.characterFile) rec.character_url = await keepInput(rec.project, "character", body.characterFile);
+    if (body.veo) rec.veo = true;
     rec.events.push({ t: 0, stage: "script", msg: `Project folder: ${rec.project}` });
     await saveRecord(rec);
     return rec;

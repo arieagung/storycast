@@ -31,6 +31,8 @@ export type RenderSource = {
   font: string;
   accent: string;
   lang: string;
+  /** When true, narration audio is embedded in each shot clip; skip separate narration tracks. */
+  veo?: boolean;
 };
 
 export type RenderFile = { path: string; text: string; note: string };
@@ -52,7 +54,7 @@ const V_CODEC = `-c:v libx264 -preset medium -crf 18 -pix_fmt yuv420p -video_tra
 
 export function renderKit(src: RenderSource): RenderKit {
   const { plan, specs } = src;
-  const { starts, segments, total } = timeline(plan, specs);
+  const { starts, segments, total } = timeline(plan, specs, src.veo);
   const steps: RenderKit["steps"] = [];
   const cuts: string[] = [];
   const ambience: string[] = [];
@@ -90,28 +92,47 @@ export function renderKit(src: RenderSource): RenderKit {
   });
 
   /* 4. The mix: narration where the timeline puts it, ambience from any
-        shot you kept, and the score under all of it. */
+        shot you kept, and the score under all of it.
+        In Veo mode the narration is already baked into each shot clip, so
+        we skip separate narration tracks and instead draw the audio from
+        the shot cuts themselves. */
   const inputs: string[] = [`-i "build/picture.mp4"`];
   const filter: string[] = [];
   const legs: string[] = [];
   let index = 1;
 
-  for (const b of plan.blocks) {
-    const path = src.narration[b.id];
-    if (!path) continue;
-    inputs.push(`-i "${path}"`);
-    const leg = `vo${b.id}`;
-    filter.push(`[${index}:a]aresample=48000,adelay=${msOf(starts[b.id] ?? 0)}:all=1[${leg}]`);
-    legs.push(`[${leg}]`);
-    index++;
-  }
-  for (const shot of ambience) {
-    const seg = segments.find((s) => s.shot === shot)!;
-    inputs.push(`-i "${src.shots[shot]}"`);
-    const leg = `amb${shot}`;
-    filter.push(`[${index}:a]aresample=48000,atrim=0:${r3(seg.dur)},asetpts=N/SR/TB,volume=0.5,adelay=${msOf(seg.start)}:all=1[${leg}]`);
-    legs.push(`[${leg}]`);
-    index++;
+  if (src.veo) {
+    // Pull audio from every cut (narration + ambience are already embedded).
+    cuts.forEach((cutPath, ci) => {
+      const seg = segments[ci];
+      if (!seg) return;
+      inputs.push(`-i "${cutPath}"`);
+      const leg = `clip${ci}`;
+      filter.push(
+        `[${index}:a]aresample=48000,atrim=0:${r3(seg.dur)},asetpts=N/SR/TB,` +
+        `adelay=${msOf(seg.start)}:all=1[${leg}]`,
+      );
+      legs.push(`[${leg}]`);
+      index++;
+    });
+  } else {
+    for (const b of plan.blocks) {
+      const path = src.narration[b.id];
+      if (!path) continue;
+      inputs.push(`-i "${path}"`);
+      const leg = `vo${b.id}`;
+      filter.push(`[${index}:a]aresample=48000,adelay=${msOf(starts[b.id] ?? 0)}:all=1[${leg}]`);
+      legs.push(`[${leg}]`);
+      index++;
+    }
+    for (const shot of ambience) {
+      const seg = segments.find((s) => s.shot === shot)!;
+      inputs.push(`-i "${src.shots[shot]}"`);
+      const leg = `amb${shot}`;
+      filter.push(`[${index}:a]aresample=48000,atrim=0:${r3(seg.dur)},asetpts=N/SR/TB,volume=0.5,adelay=${msOf(seg.start)}:all=1[${leg}]`);
+      legs.push(`[${leg}]`);
+      index++;
+    }
   }
   if (src.music) {
     inputs.push(`-i "${src.music}"`);
@@ -139,8 +160,15 @@ export function renderKit(src: RenderSource): RenderKit {
 
   /* Subtitles follow the narration file, not the shot: a lip-sync shot can come
      back a little longer than the line it was made from, and the words belong to
-     the line. */
-  const spoken = Object.fromEntries(plan.blocks.map((b) => [b.id, b.audio?.duration ?? blockDuration(b, specs)]));
+     the line. In Veo mode there is no separate narration file; use clip duration. */
+  const spoken = Object.fromEntries(
+    plan.blocks.map((b) => [
+      b.id,
+      src.veo
+        ? (specs.find((s) => s.shot === b.shot)?.clip?.duration ?? blockDuration(b, specs, true))
+        : (b.audio?.duration ?? blockDuration(b, specs)),
+    ]),
+  );
   const lines = subtitleLines(plan, starts, spoken);
 
   const files: RenderFile[] = [

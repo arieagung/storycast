@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
-import { Clapperboard, ImagePlus, Lightbulb, UserRound, X } from "lucide-react";
+import { Clapperboard, ImagePlus, Lightbulb, Pencil, UserRound, Video, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { setAgentContext } from "@/lib/agent";
 import { StatefulButton, type ButtonState } from "@/components/motion/button/stateful";
@@ -25,8 +25,9 @@ import { EASE_OUT } from "@/lib/ease";
 import { cn } from "@/lib/utils";
 import { type Config, type NewJob, type Voice } from "@/lib/api";
 import { estimateWork, workLine } from "@/lib/studio/work";
+import { NARRATIVES, type NarrativeId } from "@/lib/studio/director";
 
-const POPULAR = ["en", "tr", "es", "fr", "de", "pt", "ar", "hi", "zh", "ja", "ko", "ru"];
+const POPULAR = ["id", "en", "tr", "es", "fr", "de", "pt", "ar", "hi", "zh", "ja", "ko", "ru"];
 const IDEAS = ["Why is the sky blue?", "How do bees make honey?", "The first photograph", "How do volcanoes work?"];
 
 function Label({ children, aside }: { children: React.ReactNode; aside?: React.ReactNode }) {
@@ -123,7 +124,10 @@ export function CreateForm({ config, onStart, onError }: Props) {
   const [custom, setCustom] = useState<CustomStyle | null>(null);
   const [styleFile, setStyleFile] = useState<File | null>(null);
   const [minutes, setMinutes] = useState(1);
-  const [language, setLanguage] = useState("en");
+  const [language, setLanguage] = useState(() => {
+    const wanted = new URLSearchParams(window.location.search).get("lang");
+    return config.languages.some((l) => l.code === wanted) ? (wanted as string) : "id";
+  });
   const [character, setCharacter] = useState<Character | null>(null);
   const [charName, setCharName] = useState("");
   const [voice, setVoice] = useState<Voice | null>(null);
@@ -134,6 +138,11 @@ export function CreateForm({ config, onStart, onError }: Props) {
   });
   const member = choice.kind === "cast" ? config.characters.find((c) => c.id === choice.id) : undefined;
   const [submit, setSubmit] = useState<ButtonState>("idle");
+  const [veo, setVeo] = useState(true);
+  const [narrative, setNarrative] = useState<NarrativeId>("auto");
+  const [narrativeText, setNarrativeText] = useState("");
+  const [narrativeError, setNarrativeError] = useState(false);
+  const story = NARRATIVES.find((n) => n.id === narrative) ?? NARRATIVES[0];
 
   useEffect(() => {
     setAgentContext({
@@ -147,8 +156,9 @@ export function CreateForm({ config, onStart, onError }: Props) {
       characterUrl: choice.kind === "upload" ? (character?.preview ?? "") : "",
       characterName: choice.kind === "upload" ? charName.trim() : "",
       voice: voice ? { voice_id: voice.voice_id, name: voice.name } : null,
+      narrative: { id: narrative, text: narrative === "custom" ? narrativeText.trim() : undefined },
     });
-  }, [topic, style, custom, minutes, language, member, choice, character, charName, voice]);
+  }, [topic, style, custom, minutes, language, member, choice, character, charName, voice, narrative, narrativeText]);
   useEffect(() => () => setAgentContext(null), []);
 
   const ok = (file: File) => {
@@ -185,6 +195,11 @@ export function CreateForm({ config, onStart, onError }: Props) {
       return;
     }
     if (character?.error) return onError(character.error);
+    if (narrative === "custom" && !narrativeText.trim()) {
+      setNarrativeError(true);
+      onError("Describe your storytelling style, or pick another one");
+      return;
+    }
     setSubmit("loading");
     try {
       await onStart({
@@ -194,9 +209,12 @@ export function CreateForm({ config, onStart, onError }: Props) {
         language,
         styleFile: !member && style === "custom" ? styleFile : null,
         characterFile: choice.kind === "upload" ? (character?.file ?? null) : null,
-        character_name: choice.kind === "upload" ? charName.trim() : "",
+        character_name: charName.trim(),
         character_id: member?.id ?? "",
-        voice,
+        voice: veo ? null : voice,
+        veo: veo || undefined,
+        narrative,
+        narrative_text: narrative === "custom" ? narrativeText.trim() : "",
       });
       setSubmit("success");
       setTimeout(() => setSubmit("idle"), 1600);
@@ -209,7 +227,7 @@ export function CreateForm({ config, onStart, onError }: Props) {
 
   const chosen = config.styles.find((s) => s.id === style);
   const styleLabel = style === "custom" ? "Your own style" : chosen?.label;
-  const who = member ? member.name : choice.kind === "upload" ? charName.trim() || "Your character" : "A new character";
+  const who = charName.trim() || (member ? member.name : choice.kind === "upload" ? "Your character" : "A new character");
 
   return (
     <motion.section
@@ -296,14 +314,104 @@ export function CreateForm({ config, onStart, onError }: Props) {
         </div>
 
         <div>
-          <Label>Voice</Label>
-          <VoiceField
-            value={voice}
-            onChange={setVoice}
-            lang={language}
-            topic={topic}
-            fallback={member ? { title: `${member.name}'s voice`, detail: member.voice.name ? `${member.voice.name} · pick another any time` : "Pick another any time" } : undefined}
-          />
+          <Label aside={<span className="truncate text-[11px] text-muted-foreground">{story.blurb}</span>}>Storytelling</Label>
+          <div role="radiogroup" aria-label="Storytelling style" className="flex flex-wrap gap-1.5">
+            {NARRATIVES.map((n) => (
+              <button
+                key={n.id}
+                type="button"
+                role="radio"
+                aria-checked={narrative === n.id}
+                title={n.blurb}
+                onClick={() => {
+                  setNarrative(n.id);
+                  setNarrativeError(false);
+                }}
+                className={cn(
+                  "rounded-full border px-2.5 py-1 text-[11.5px] transition-colors",
+                  narrative === n.id
+                    ? "border-primary/50 bg-primary/10 text-foreground"
+                    : "border-border text-muted-foreground hover:border-border-strong hover:text-foreground",
+                )}
+              >
+                {n.label}
+              </button>
+            ))}
+          </div>
+          <AnimatePresence initial={false}>
+            {narrative === "custom" && (
+              <motion.div key="custom-story" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.3, ease: EASE_OUT }} className="overflow-hidden">
+                <textarea
+                  value={narrativeText}
+                  onChange={(e) => {
+                    setNarrativeText(e.target.value);
+                    if (narrativeError) setNarrativeError(false);
+                  }}
+                  rows={3}
+                  maxLength={400}
+                  aria-label="Describe the storytelling style"
+                  aria-invalid={narrativeError || undefined}
+                  placeholder="e.g. A grandparent telling the story by the fireplace, gentle humour, ends with a small life lesson"
+                  className={cn(
+                    "mt-2 w-full resize-none rounded-2xl border bg-background/30 px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus:border-border-strong",
+                    narrativeError ? "border-destructive" : "border-border",
+                  )}
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {!veo && (
+          <div>
+            <Label>Voice</Label>
+            <VoiceField
+              value={voice}
+              onChange={setVoice}
+              lang={language}
+              topic={topic}
+              fallback={member ? { title: `${member.name}'s voice`, detail: member.voice.name ? `${member.voice.name} · pick another any time` : "Pick another any time" } : undefined}
+            />
+          </div>
+        )}
+
+        <div>
+          <Label>Mode</Label>
+          <button
+            type="button"
+            onClick={() => setVeo((v) => !v)}
+            aria-pressed={veo}
+            className={cn(
+              "flex w-full items-start gap-3 rounded-2xl border p-3 text-left transition-colors",
+              veo
+                ? "border-primary/50 bg-primary/5 text-foreground"
+                : "border-border bg-background/30 text-muted-foreground hover:border-border-strong hover:text-foreground",
+            )}
+          >
+            <span
+              className={cn(
+                "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-xl transition-colors",
+                veo ? "bg-primary/10 text-primary" : "bg-muted",
+              )}
+            >
+              <Video className="size-4" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-medium leading-snug">
+                Veo Mode
+                {veo && (
+                  <span className="ml-2 inline-flex items-center rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                    ON
+                  </span>
+                )}
+              </span>
+              <span className="block text-[11px] leading-relaxed">
+                {veo
+                  ? "Each shot is generated by Veo 3 with narration baked in. No separate TTS step."
+                  : "Standard: generate narration audio separately, then lip-sync or mix it in."}
+              </span>
+            </span>
+          </button>
         </div>
 
         <div className="mt-auto flex flex-col gap-2 border-t border-border pt-5">
@@ -311,10 +419,10 @@ export function CreateForm({ config, onStart, onError }: Props) {
             Make the film
           </StatefulButton>
           <p className="text-center text-[11px] text-muted-foreground">
-            {who} · {member ? member.style_label : styleLabel} · {minutes} min · about {Math.round(estimateWork(minutes).seconds)} s of film
+            {who} · {member ? member.style_label : styleLabel} · {story.label} · {minutes} min · about {Math.round(estimateWork(minutes).seconds)} s of film
           </p>
           {(() => {
-            const w = estimateWork(minutes, { invent: !member, customStyle: !member && style === "custom", uploadedCharacter: choice.kind === "upload" });
+            const w = estimateWork(minutes, { invent: !member, customStyle: !member && style === "custom", uploadedCharacter: choice.kind === "upload", veo });
             return (
               <p className="text-center text-[11px] text-muted-foreground">
                 <span className="cursor-help tabular-nums underline decoration-dotted underline-offset-2" title={workLine(w)}>
@@ -332,7 +440,7 @@ export function CreateForm({ config, onStart, onError }: Props) {
           <Label aside={<span className="truncate text-[11px] text-muted-foreground">{member ? `${member.name}: ${member.personality}` : `${config.characters.length} narrators, each with their own look and voice`}</span>}>
             Character
           </Label>
-          <CharacterPicker cast={config.characters} groups={config.character_groups} lang={language} value={choice} onChange={setChoice} uploadPreview={character?.preview} />
+          <CharacterPicker cast={config.characters} groups={config.character_groups} lang={language} value={choice} onChange={(v) => { if (v.kind !== choice.kind) setCharName(""); setChoice(v); }} uploadPreview={character?.preview} />
         </div>
 
         <AnimatePresence initial={false}>
@@ -350,6 +458,24 @@ export function CreateForm({ config, onStart, onError }: Props) {
                 }}
 
               />
+            </motion.div>
+          )}
+          {choice.kind !== "upload" && (
+            <motion.div key="charname" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.3, ease: EASE_OUT }} className="overflow-hidden">
+              <div className="flex items-center gap-2 rounded-2xl border border-border bg-background/30 px-3 py-2">
+                <Pencil className="size-3.5 shrink-0 text-muted-foreground" />
+                <input
+                  value={charName}
+                  onChange={(e) => setCharName(e.target.value)}
+                  placeholder={member ? `${member.name} (rename optional)` : "Name your character (optional)"}
+                  className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                />
+                {charName && (
+                  <button type="button" onClick={() => setCharName("")} aria-label="Clear name" className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
+                    <X className="size-3" />
+                  </button>
+                )}
+              </div>
             </motion.div>
           )}
           {choice.kind !== "cast" && (
