@@ -343,6 +343,8 @@ export async function measure(path: string, file: File | Blob, kind: MediaKind):
     const sep = rawFullPath.includes("/") ? "/" : "\\";
     const last = rawFullPath.lastIndexOf(sep);
     if (last > 0) base.folder = rawFullPath.slice(0, last);
+  } else if (path.includes("/")) {
+    base.folder = path.slice(0, path.lastIndexOf("/"));
   }
   try {
     return { ...base, ...(kind === "image" ? await imageMeta(file) : await mediaMeta(file, kind)) };

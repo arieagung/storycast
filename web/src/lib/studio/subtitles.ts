@@ -1,5 +1,5 @@
 import type { Plan } from "./director";
-import { FRAME, namedRgb, type FrameSize } from "./pipeline";
+import { FRAME, TAIL_ID, namedRgb, type FrameSize } from "./pipeline";
 
 /* ------------------------------------------------------------------ *\
    Subtitles
@@ -33,7 +33,9 @@ export function lineWords(text: string, start: number, duration: number): SubWor
 
 export function subtitleLines(plan: Plan, starts: Record<string, number>, lengths: Record<string, number>, perLine = 4): SubLine[] {
   const lines: SubLine[] = [];
-  for (const b of plan.blocks) {
+  // The tail's closing line (keyed TAIL_ID) is subtitled like any block.
+  const spoken = [...plan.blocks.map((b) => ({ id: b.id, text: b.text })), { id: TAIL_ID, text: plan.tail.text ?? "" }];
+  for (const b of spoken) {
     const words = lineWords(b.text, starts[b.id] ?? 0, lengths[b.id] ?? 0);
     for (let i = 0; i < words.length; i += perLine) {
       const group = words.slice(i, i + perLine);

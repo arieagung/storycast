@@ -22,7 +22,17 @@ export type Block = {
   /** The narration file for this block, once it is in the project folder. */
   audio?: AssetInfo;
 };
-export type Tail = { scene: string; action: string; camera: string; sound: string; shot: string };
+export type Tail = {
+  scene: string;
+  action: string;
+  camera: string;
+  sound: string;
+  shot: string;
+  /** The film's last spoken words, said off-screen over the closing shot. Missing on old plans. */
+  text?: string;
+  /** Standard Mode: the recording of that line (narration/tail.*). */
+  audio?: AssetInfo;
+};
 export type Plan = {
   title: string;
   subtitle: string;
@@ -52,6 +62,50 @@ export async function languageName(lang: string) {
 }
 
 const quotedList = (xs: string[]) => `[${xs.map((x) => `'${x}'`).join(", ")}]`;
+
+/* ------------------------------------------------------------------ *\
+   Title and native narration
+\* ------------------------------------------------------------------ */
+
+/**
+ * The title competes for a click next to other videos, so it is written for that, not as a label.
+ * Title and subtitle are shown together ("TITLE subtitle") and hand-lettered on the end card.
+ */
+export function titleRule(language: string) {
+  return (
+    `- "title" and "subtitle" (in ${language}): together they are the video's title on a platform like YouTube, where it competes with many other videos for one click. ` +
+    "The goal: someone scrolling past can't resist opening it, and someone searching for this topic finds it. It must feel made for this topic alone, so it should never be predictable or interchangeable with another topic's title " +
+    "(a narrator-name-plus-topic label is exactly what we don't want; nobody searches for the narrator). The film must deliver what the title promises. " +
+    'The "subtitle" is the second line under the title on the end card and adds something the title does not say yet.\n' +
+    '- The opening of block 1 immediately picks up the title\'s promise, so a viewer who clicked stays.'
+  );
+}
+
+/** The tail line is said over one short closing shot, so it stays brief. */
+export const TAIL_WORDS = 14;
+
+/**
+ * Why viewers leave differs by length: a short is judged in its first seconds, a longer film
+ * loses people between sections. The rule states the goal; the director decides the structure.
+ */
+export function retentionRule(minutes: number) {
+  return minutes <= 1
+    ? "- Retention (short video): viewers of short videos decide within the first three seconds whether to keep watching or swipe away, and a film that loses that moment is never seen. " +
+        "So the opening image and the first words of block 1 must win it on their own, and the scenes are ordered for a short, not as a slow build; every following block has to keep earning the next seconds."
+    : "- Retention (longer video): viewers of longer videos drift away wherever the film feels finished for now. " +
+        "Shape the story in sections, each ending on an open question, a surprise or a cliffhanger that makes the next section feel necessary, with the full payoff saved for the end; the opening still has to hook within the first seconds.";
+}
+
+/**
+ * Asks for narration that sounds native rather than translated. Returns "" for English.
+ */
+export function nativeRule(language: string) {
+  if (language === "English") return "";
+  return (
+    `- Native ${language}: every "text", "title" and "subtitle" must sound as if a native ${language} storyteller wrote and spoke it, not like a translation or a textbook. ` +
+    `A native listener should notice nothing odd in the sentence structure or word choice; the language should feel as natural and warm as good ${language} content made for a wide audience.`
+  );
+}
 
 /* ------------------------------------------------------------------ *\
    Storytelling style
@@ -136,7 +190,9 @@ function visualRule(style: StyleFull) {
     "go inside, underneath, up close or far above; use cutaways and cross-sections (the magma chamber under a volcano, the inside of a beehive), macro details, aerial views, " +
     "moments from the past, before/after, cause and effect, scale comparisons, and the process itself in mid-action. " +
     "Vary the subject, the shot scale and the composition from block to block; never repeat the same framing twice in a row, and never make the film a series of the narrator standing in front of the subject. " +
-    "Explanatory cutaways need no travel bridge: the narration carries the link, while scenes with the narrator keep the story's place and time coherent."
+    "Explanatory cutaways need no travel bridge: the narration carries the link, while scenes with the narrator keep the story's place and time coherent.\n" +
+    "- Energy: the viewer should never feel they are watching a presenter talk in front of a backdrop. The film should feel like a lively animated film that holds attention from the first seconds to the end, " +
+    "with every shot giving a reason to keep watching and the narrator living the story rather than reporting it, including while talking on camera."
   );
 }
 
@@ -191,36 +247,39 @@ Return ONLY one JSON object, no prose, no markdown fences.
 RULES
 ${[charRule, storyRules(character, narrative), visualRule(style)].filter(Boolean).join("\n")}
 - Script: exactly ${n} blocks, exactly ${talk} of them "T" (the character talks on camera); the rest are "V" (voice-over under cinematic shots). Block 1 is "V" and the last block is "V". Beyond that the story is yours: structure, tone, jokes, twists and how the character enters are your creative choices.
-- Ending: the last block is the closing of the film, not one more fact. Its "text" sums up the answer to the topic in plain words and ends with a warm closing sentence that fits the storytelling style (a farewell, a final thought or an invitation to look at the world differently). It adds no new facts. Its "scene" leads straight into the place of the "tail", so the goodbye in the tail follows the closing words. The tail itself has no spoken line, so the closing must be complete in the last block.
+${retentionRule(minutes)}
+- Ending: the last block closes the explanation: its "text" sums up the answer to the topic in plain words and adds no new facts. Its "scene" leads straight into the place of the "tail". The "tail" is the last thing the viewer sees and hears, so its "text" carries the film's final spoken words: the line people remember and take away, fitting the storytelling style. It is spoken off-screen over a short closing shot, so it has to land in a few seconds (at most ${TAIL_WORDS} words).
 - Text length: V blocks ${vw} words; T blocks ${tw} words. Language of all narration: ${language}. Spoken rhythm, one idea per block. Facts must be accurate; hedge legends and uncertain claims ("legend says").
 - Continuity (story): the film is one continuous story. Every block grows out of the one before it in place, time and logic. Whenever the setting, the time or the subject changes, the viewer sees or hears how and why we got there; never cut to a new place, companion or subject as if the viewer already knew. How you bridge is up to this story.
 - Continuity (picture), CRITICAL: every "scene" is painted by an image model that has never seen the other shots, so continuity only exists if you write it into every scene. Before writing the blocks, settle the recurring sets, props and companions of the film and one fixed wording for each (material, color, shape, position). Every time one of them appears, including in the "tail", describe it again in full with exactly the same words, never with back-references like "the same tree as before".
 - State continuity, CRITICAL: track the state of every recurring set and prop from block to block. Once the story changes something (a hollow filled with honeycomb, a cell capped with wax, a seed sprouted, a door opened, day turned to evening), every later scene that shows it describes the changed state explicitly; nothing silently reverts, empties or disappears unless the story says so. The time of day, weather and season only change when the story moves them. The "tail" shows the latest state of everything in it. Example: if one scene shows a tree hollow hung with pale ivory honeycomb, every later scene with that tree says the hollow is hung with pale ivory honeycomb.
 - Stay inside the story: never say "this video" and never state how long the film is.
-- LANGUAGE RULE: "text" (narration) must be in ${language}. All other fields — "place", "scene", "action", "sound", "music_prompt", and the "tail" fields — must be written IN ENGLISH regardless of the narration language. "title" is the character's name (any language fine); "subtitle" is in ${language}.
+- LANGUAGE RULE: "text" (narration) must be in ${language}. "tail.text" is narration too, in ${language}. All other fields — "place", "scene", "action", "sound", "music_prompt", and the other "tail" fields — must be written IN ENGLISH regardless of the narration language. "title" and "subtitle" are in ${language}.
+${nativeRule(language)}
 - For every block:
   - "place": a short English label of where and when the block happens.
-  - "scene": one paragraph (40-80 words) IN ENGLISH describing the keyframe: what the image shows and explains, setting, era, lighting, composition, props, and, when the narrator is in shot, what the character is doing. Everything exists in the style world (${style.label}). For T blocks describe the setting and one gesture only; the character faces the camera in a medium close-up, talking. Write only what is visible in this single frame — never reference "the same table as before" or any other shot; describe what the image model will see as its only input. Call the narrator by name only and never describe the narrator's look (body, fur, colors, clothing, accessories): the model-sheet images already define it, and repeating traits makes the image model redraw them differently. When "character_in_shot" is false, no character, person or creature resembling the narrator appears.
+  - "scene": one paragraph (40-80 words) IN ENGLISH describing the keyframe: what the image shows and explains, setting, era, lighting, composition, props, and, when the narrator is in shot, what the character is doing. Everything exists in the style world (${style.label}). For T blocks the narrator's face and mouth must be clearly visible to the camera, because the line is lip-synced; everything else about the shot is yours. Write only what is visible in this single frame — never reference "the same table as before" or any other shot; describe what the image model will see as its only input. Call the narrator by name only and never describe the narrator's look (body, fur, colors, clothing, accessories): the model-sheet images already define it, and repeating traits makes the image model redraw them differently. When "character_in_shot" is false, no character, person or creature resembling the narrator appears.
   - "character_in_shot": T blocks are always true. For V blocks decide per shot what serves the explanation best: true when the narrator adds something to the picture (reacting, pointing, discovering, interacting, giving scale), false when the subject should fill the frame (cutaways, cross-sections, close-ups, processes, the past). A good film mixes both.
   - "action": ${
     veo
-      ? "IN ENGLISH, what moves in the video: for V blocks 2-3 short present-tense motion beats (with the narrator in shot, include one small charming or comic beat; without, show the subject itself in motion: magma rising, cells dividing, a wave forming); for T blocks ONE small gesture the character makes while talking. The video model starts from the keyframe, so describe only movement and change: call the narrator by name only and never describe again how the character, the set or the lighting look."
+      ? "IN ENGLISH, what moves in the video: for V blocks 2-3 short present-tense motion beats (with the narrator in shot, include one small charming or comic beat; without, show the subject itself in motion: magma rising, cells dividing, a wave forming); for T blocks what the narrator does while talking. The video model starts from the keyframe, so describe only movement and change: call the narrator by name only and never describe again how the character, the set or the lighting look."
       : 'IN ENGLISH, 2-3 short present-tense motion beats for the video (with the narrator in shot, include one small charming or comic beat; without, show the subject itself in motion) (V blocks only; "" for T).'
   }
   - "camera": one of ${quotedList(cameras)}. Never use a push-in when the character is in shot.
   - "sound": ambient foley IN ENGLISH for the shot (no music, no speech).
 - NEVER put readable text, signs, labels, screens with words, or numbers in any scene. At most ONE block may show one big simple word or year if it is essential; then write "shows only the large letters X" in its scene.
 - Avoid anything a strict filter could flag (real names, brands, danger, weapons, crowds panicking). Describe real people generically (no likeness), no brand logos, no violence or danger to children. In every field, never use brand names, trademarks, franchise or famous-character names, or words closely tied to them (write "felt bear", not "teddy bear").
-- "tail": the final shot after the last block: the character in a wide shot saying goodbye or resolving the story, with calm open space in the upper third for the title. Its "scene" returns to a place of the story and repeats the fixed wording and the latest state of every set and prop it shows. Give "scene", "action", "camera" (prefer "slow pull-back"), "sound" — all IN ENGLISH.
+- "tail": the final shot after the last block: the character in a wide shot saying goodbye or resolving the story, with calm open space in the upper third for the title. Its "scene" returns to a place of the story and repeats the fixed wording and the latest state of every set and prop it shows. Give "text" (the closing line, in ${language}), and "scene", "action", "camera" (prefer "slow pull-back"), "sound" IN ENGLISH.
 ${tagRule}
 ${veo ? voiceDescRule : voiceRule}
 - "music_prompt": an instrumental score description fitting the style and topic: 3-5 acoustic instruments, mood arc, sparse under narration, a warm swell in the final twenty seconds ending on a soft resolved chord. End with "Acoustic instruments only, no vocals."
-- "title": the character's name. "subtitle": a short lowercase phrase starting with "and the ..." (in ${language}). "slug": 3-5 word ascii kebab-case.
+${titleRule(language)}
+- "slug": 3-5 word ascii kebab-case from the title's keywords.
 
 JSON SHAPE
 {"title": "", "subtitle": "", "slug": "", "character": {"name": "", "traits": "", "pronoun": "his|her|its", "tag": ""}, ${veo ? '"voice_desc": "", ' : '"voice_id": "", '}"music_prompt": "",
  "blocks": [{"kind": "V|T", "text": "", "place": "", "scene": "", "character_in_shot": true, "action": "", "camera": "", "sound": ""}],
- "tail": {"scene": "", "action": "", "camera": "", "sound": ""}}`;
+ "tail": {"text": "", "scene": "", "action": "", "camera": "", "sound": ""}}`;
 }
 
 /* ------------------------------------------------------------------ *\
@@ -325,6 +384,9 @@ export async function reviewPlan(raw: any, opts: { minutes: number; character?: 
       shot: "",
     },
   };
+  const closing = text(raw.tail.text);
+  if (closing) plan.tail.text = closing;
+  else warnings.push('No "tail.text" in the answer; the closing shot has no spoken line');
   const tag = text(raw.character?.tag).replace(/[.\s]+$/, "");
   if (tag) plan.character.tag = tag;
   else warnings.push('No "character.tag" in the answer; prompts name the narrator without a short description');
@@ -357,15 +419,17 @@ export const CONTINUITY_SYSTEM = "You are the script editor of a short narrated 
 export const mostInserts = (blocks: number) => Math.max(1, Math.min(Math.floor(blocks / 5), 64 - blocks));
 
 /** The blocks, plus the tail (index "tail") so its scene is checked for continuity too. */
-export const continuityScript = (blocks: Block[], tail?: Pick<Tail, "scene"> | null) =>
+export const continuityScript = (blocks: Block[], tail?: Pick<Tail, "scene" | "text"> | null) =>
   JSON.stringify([
     ...blocks.map((b, index) => ({ index, kind: b.kind, place: b.place ?? "", text: b.text ?? "", scene: b.scene ?? "" })),
-    ...(tail ? [{ index: "tail", kind: "tail", place: "", text: "", scene: tail.scene ?? "" }] : []),
+    ...(tail ? [{ index: "tail", kind: "tail", place: "", text: tail.text ?? "", scene: tail.scene ?? "" }] : []),
   ]);
 
 export async function continuityPrompt(script: string, minutes: number, lang: string, most: number) {
   const { cameras } = await studioData();
   const [vw, tw] = words(minutes);
+  const language = await languageName(lang);
+  const native = nativeRule(language);
   return (
     "Here is the script as blocks (kind V = voice-over, T = the narrator talks on camera).\n" +
     "Watch it in your head as a first-time viewer who only sees and hears what is on screen. Wherever the film jumps (a new place, time, " +
@@ -377,16 +441,22 @@ export async function continuityPrompt(script: string, minutes: number, lang: st
     "never sees the other shots, so: (1) every recurring set, prop or companion uses the same concrete wording (material, color, shape, position) each time it appears; " +
     "(2) its state follows the story: once something has changed (filled, built, capped, grown, opened, moved, day turned to evening), every later scene that shows it states the " +
     "changed state explicitly, and nothing silently reverts, empties or disappears (if a tree hollow was hung with honeycomb, later scenes of that tree still say so); " +
-    "(3) scenes call the narrator by name only and never describe the narrator's look. Rewrite every scene that breaks one of these. " +
-    "Finally check the ending: the last block must close the film, summing up the answer to the topic and ending on a warm closing sentence with no new facts, because the tail has no spoken line; " +
-    "rewrite its text if it is just one more fact. " +
-    `Keep "text" (narration) in ${await languageName(lang)}. Keep "scene", "place", "action", "sound" IN ENGLISH. ` +
+    "(3) scenes call the narrator by name only and never describe the narrator's look; " +
+    "(4) no stretch of the film feels static or repetitive to watch. Rewrite every scene that breaks one of these. " +
+    "Check that the film keeps the viewer watching as this rule asks, and rewrite what does not:\n" +
+    `${retentionRule(minutes)}\n` +
+    "Finally check the ending: the last block closes the explanation, summing up the answer to the topic with no new facts (rewrite its text if it is just one more fact), " +
+    `and the tail's "text" is the film's final spoken line, the one the viewer remembers (at most ${TAIL_WORDS} words, in ${language}); write or rewrite it if it is missing or weak. ` +
+    `Keep "text" (narration) in ${language}. Keep "scene", "place", "action", "sound" IN ENGLISH. ` +
+    (native
+      ? `Rewrite any "text" that does not meet this, keeping its facts and length:\n${native}\n`
+      : "") +
     "Every scene you write or rewrite must be self-contained: describe recurring sets and props in full, never with back-references like \"the same table\". " +
     `Keep the narrator, the facts, ${vw} words for V and ${tw} words for T blocks, no readable text in scenes, and avoid anything a strict filter could flag (real names, brands, danger, weapons, crowds panicking).\n` +
     `SCRIPT: ${script}\n` +
-    'Return {"edits": [{"index": 0, "text": "", "scene": "", "place": ""}], "tail": {"scene": ""}, ' +
+    'Return {"edits": [{"index": 0, "text": "", "scene": "", "place": ""}], "tail": {"text": "", "scene": ""}, ' +
     '"inserts": [{"after": 0, "text": "", "place": "", "scene": "", "character_in_shot": true, "action": "", "camera": "", "sound": ""}]} ' +
-    `("camera" one of ${quotedList(cameras)}; "tail" only when its scene needs a rewrite, otherwise leave its scene ""). Use empty lists when the script already flows.`
+    `("camera" one of ${quotedList(cameras)}; fill "tail" fields only when they need a rewrite, otherwise leave them ""). Use empty lists when the script already flows.`
   );
 }
 
@@ -400,11 +470,21 @@ export function applyContinuity(
   const out = blocks.map((b) => ({ ...b }));
   let rewrites = 0;
   let newTail = tail;
-  // The tail may come back as "tail": {"scene"} or as an edit with index "tail".
-  const tailScene = [r?.tail?.scene, ...(r?.edits ?? []).filter((e: any) => e?.index === "tail").map((e: any) => e?.scene)].find(str);
-  if (tail && tailScene && tailScene.trim() !== tail.scene) {
-    newTail = { ...tail, scene: tailScene.trim() };
-    rewrites++;
+  // The tail may come back as "tail": {"scene", "text"} or as an edit with index "tail".
+  const tailEdits = [r?.tail, ...(r?.edits ?? []).filter((e: any) => e?.index === "tail")];
+  const tailScene = tailEdits.map((e: any) => e?.scene).find(str);
+  const tailText = tailEdits.map((e: any) => e?.text).find(str);
+  if (tail) {
+    let touched = false;
+    if (tailScene && tailScene.trim() !== tail.scene) {
+      newTail = { ...newTail!, scene: tailScene.trim() };
+      touched = true;
+    }
+    if (tailText && tailText.trim() !== (tail.text ?? "")) {
+      newTail = { ...newTail!, text: tailText.trim() };
+      touched = true;
+    }
+    if (touched) rewrites++;
   }
   for (const e of r?.edits ?? []) {
     const i = e?.index;
@@ -444,7 +524,7 @@ export function applyContinuity(
 export const RESIZE_SYSTEM = "You edit narration lines. Return ONLY JSON.";
 
 export function resizePrompt(text: string, seconds: string, want: string, language: string) {
-  return `This talking line lasts ${seconds} s when spoken; it must last 6-12 s. Make it ${want}, keep the meaning, language ${language}. Line: "${text}"\nReturn {"text": "..."}`;
+  return `This talking line lasts ${seconds} s when spoken; it must last 6-12 s. Make it ${want}, keep the meaning, language ${language}. It should sound like a native ${language} speaker said it, not a translation. Line: "${text}"\nReturn {"text": "..."}`;
 }
 
 export async function resizeAsk(line: string, seconds: number, lang: string) {

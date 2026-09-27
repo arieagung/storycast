@@ -1,6 +1,6 @@
 import { SLOTS, narrationSlot, shotSlot, slotPath } from "./assets";
 import type { Plan } from "./director";
-import { CARD_FADE, COMPOSE, END_CARD, FINAL_LUFS, FPS, FRAME, LOUDNORM, MERGE, MERGE_AV, MUSIC_LUFS, STILL, SUBTITLE, TRIM, blockDuration, detectFrameFromAssets, timeline, type FrameSize, type Spec } from "./pipeline";
+import { CARD_FADE, COMPOSE, END_CARD, FINAL_LUFS, FPS, FRAME, LOUDNORM, MERGE, MERGE_AV, MUSIC_LUFS, STILL, SUBTITLE, TAIL_ID, TRIM, blockDuration, tailSpoken, detectFrameFromAssets, timeline, type FrameSize, type Spec } from "./pipeline";
 import { subtitleLines, toAss, toSrt } from "./subtitles";
 
 /* ------------------------------------------------------------------ *\
@@ -228,6 +228,14 @@ export function renderKit(src: RenderSource): RenderKit {
       legs.push(`[${leg}]`);
       index++;
     }
+    // The tail's closing line, laid in just after the cut to the closing shot.
+    if (plan.tail.text?.trim() && plan.tail.audio) {
+      const path = src.narration[TAIL_ID] || slotPath(narrationSlot(TAIL_ID));
+      inputs.push(`-i "${path}"`);
+      filter.push(`[${index}:a]aresample=48000,adelay=${msOf(starts[TAIL_ID] ?? 0)}:all=1[vo${TAIL_ID}]`);
+      legs.push(`[vo${TAIL_ID}]`);
+      index++;
+    }
     for (const shot of ambience) {
       const seg = segments.find((s) => s.shot === shot)!;
       const source = src.shots[shot] || slotPath(shotSlot(shot));
@@ -267,6 +275,7 @@ export function renderKit(src: RenderSource): RenderKit {
         : (b.audio?.duration ?? blockDuration(b, specs)),
     ]),
   );
+  spoken[TAIL_ID] = tailSpoken(plan, specs, src.veo);
   const autoLines = subtitleLines(plan, starts, spoken);
 
   // In Veo Mode the Standard Mix filter is not used, so build/mix.txt is empty.

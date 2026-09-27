@@ -139,6 +139,10 @@ export class Studio {
     this.style = rec.style === "custom" ? this.st.style : (this.st.style = preset);
     this.styleRef = rec.style_url || preset?.ref || "";
     rec.style_label = this.style?.label ?? rec.style;
+    if (this.rec.folder_path) {
+      this.rec.folder_path = this.cleanFolderPath(this.rec.folder_path);
+      this.syncAssetLocations();
+    }
   }
 
   static async open(rec: FilmRecord) {
@@ -152,8 +156,84 @@ export class Studio {
     return this.rec.folder_path || "";
   }
   async setFolderPath(folder: string) {
-    this.rec.folder_path = folder.trim();
+    this.rec.folder_path = this.cleanFolderPath(folder.trim());
+    this.syncAssetLocations();
     await this.save();
+  }
+  private cleanFolderPath(folder: string): string {
+    if (!folder) return "";
+    let cleaned = folder.replace(/[\\/]+$/, "");
+    for (const f of FOLDERS) {
+      const regex = new RegExp(`[\\\\/]${f}$`, "i");
+      if (regex.test(cleaned)) {
+        cleaned = cleaned.replace(regex, "");
+        break;
+      }
+    }
+    return cleaned;
+  }
+
+  /**
+   * Applies accurate disk location information (fullPath, folder) to an AssetInfo based on
+   * this.rec.folder_path, relative subfolder path, or native file system path.
+   */
+  private applyLocation(info: AssetInfo, nativePath?: string) {
+    const rawFolder = this.rec.folder_path;
+    const sep = rawFolder?.includes("/") && !rawFolder?.includes("\\") ? "/" : "\\";
+    const relNorm = info.path.replace(/[\\/]+/g, sep);
+
+    if (nativePath) {
+      const nativeSep = nativePath.includes("/") ? "/" : "\\";
+      const last = nativePath.lastIndexOf(nativeSep);
+      const nativeFolder = last > 0 ? nativePath.slice(0, last) : "";
+
+      // If folder_path is not set yet, infer the project root from nativePath & info.path
+      if (!this.rec.folder_path && nativeFolder) {
+        const dir = info.path.includes("/")
+          ? info.path.slice(0, info.path.lastIndexOf("/")).replace(/[\\/]+/g, nativeSep)
+          : "";
+        if (dir && nativeFolder.toLowerCase().endsWith(`${nativeSep}${dir}`.toLowerCase())) {
+          this.rec.folder_path = nativeFolder.slice(0, -(dir.length + 1));
+        } else if (!dir) {
+          this.rec.folder_path = nativeFolder;
+        }
+      }
+    }
+
+    if (this.rec.folder_path) {
+      info.fullPath = `${this.rec.folder_path.replace(/[\\/]+$/, "")}${sep}${relNorm}`;
+      const last = info.fullPath.lastIndexOf(sep);
+      info.folder = last > 0 ? info.fullPath.slice(0, last) : this.rec.folder_path;
+    } else if (nativePath) {
+      info.fullPath = nativePath;
+      const nativeSep = nativePath.includes("/") ? "/" : "\\";
+      const last = nativePath.lastIndexOf(nativeSep);
+      if (last > 0) info.folder = nativePath.slice(0, last);
+    } else if (info.path.includes("/")) {
+      info.folder = info.path.slice(0, info.path.lastIndexOf("/"));
+    }
+  }
+
+  /** Ensures all existing assets in the project have up-to-date fullPath and folder locations. */
+  private syncAssetLocations() {
+    const allAssets: (AssetInfo | undefined)[] = [
+      this.st.sheet,
+      this.st.hero,
+      this.st.music,
+      this.st.card,
+      this.st.srt,
+      this.st.film,
+      this.st.clean,
+      ...(this.specs.map((s) => s.key)),
+      ...(this.specs.map((s) => s.clip)),
+      ...(this.plan?.blocks.map((b) => b.audio) ?? []),
+      this.plan?.tail?.audio,
+    ];
+    for (const a of allAssets) {
+      if (a && a.path) {
+        this.applyLocation(a);
+      }
+    }
   }
   private full(path: string) {
     return join(this.project, path);
@@ -287,7 +367,10 @@ export class Studio {
       assets: {
         sheet: this.sheetRef || undefined,
         hero: this.heroRef || undefined,
-        narration: Object.fromEntries((p?.blocks ?? []).filter((b) => b.audio).map((b) => [b.id, this.ref(b.audio)])),
+        narration: Object.fromEntries([
+          ...(p?.blocks ?? []).filter((b) => b.audio).map((b) => [b.id, this.ref(b.audio)]),
+          ...(p?.tail.audio ? [[P.TAIL_ID, this.ref(p.tail.audio)]] : []),
+        ]),
         keyframes: Object.fromEntries(this.specs.filter((s) => s.key).map((s) => [s.shot, this.ref(s.key)])),
         clips: Object.fromEntries(this.specs.filter((s) => s.clip).map((s) => [s.shot, this.ref(s.clip)])),
         music: this.ref(st.music) || undefined,
@@ -382,7 +465,7 @@ export class Studio {
         shape:
           `{"title": "", "subtitle": "", "slug": "", "character": {"name": "", "traits": "", "pronoun": ""${this.veoMode ? ', "tag": ""' : ""}}, ${this.veoMode ? '"voice_desc": "", ' : '"voice_id": "", '}"music_prompt": "", ` +
           '"blocks": [{"kind": "V|T", "text": "", "place": "", "scene": "", "character_in_shot": true, "action": "", "camera": "", "sound": ""}], ' +
-          '"tail": {"scene": "", "action": "", "camera": "", "sound": ""}}',
+          '"tail": {"text": "", "scene": "", "action": "", "camera": "", "sound": ""}}',
         currentJson: this.plan ? JSON.stringify(this.plan, null, 2) : undefined,
         done: !!this.plan,
       },
@@ -401,7 +484,7 @@ export class Studio {
         prompt: joined(D.CONTINUITY_SYSTEM, this.continuity ?? ""),
         params: { model: D.DIRECTOR_MODEL, max_tokens: Math.min(32000, 6000 + 500 * p.blocks.length), reasoning: true },
         refs: [],
-        shape: `{"edits": [{"index": 0, "text": "", "scene": "", "place": ""}], "inserts": [{"after": 0, "text": "", "place": "", "scene": "", "character_in_shot": true, "action": "", "camera": "", "sound": ""}]}  · up to ${most} inserts`,
+        shape: `{"edits": [{"index": 0, "text": "", "scene": "", "place": ""}], "tail": {"text": "", "scene": ""}, "inserts": [{"after": 0, "text": "", "place": "", "scene": "", "character_in_shot": true, "action": "", "camera": "", "sound": ""}]}  · up to ${most} inserts`,
         currentJson: this.st.edited ? JSON.stringify(this.st.edited, null, 2) : undefined,
         optional: true,
         done: this.st.edited !== undefined,
@@ -469,7 +552,28 @@ export class Studio {
     if (this.veoMode) return [];
     const p = this.plan!;
     const v = this.voice;
-    return p.blocks.map((b) => {
+    const closing = p.tail.text?.trim();
+    const tailTask: ManualTask[] = closing
+      ? [
+          {
+            key: `voice:${P.TAIL_ID}`,
+            stage: "voice",
+            kind: "audio",
+            title: `${p.tail.shot} · closing line`,
+            hint: "Voice-over over the final shot.",
+            model: P.TTS,
+            modelNote: v?.name ? `${v.name} · ${v.voice_id}` : p.voice_id,
+            prompt: closing,
+            params: { text: closing, voice: p.voice_id, stability: 0.5, language_code: this.rec.lang },
+            refs: [],
+            slot: narrationSlot(P.TAIL_ID),
+            asset: p.tail.audio,
+            want: { note: "a few seconds; the final shot stretches to fit it" },
+            done: !!p.tail.audio?.duration,
+          },
+        ]
+      : [];
+    return p.blocks.map((b): ManualTask => {
       const dur = b.audio?.duration;
       const talk = b.kind === "T";
       const off = talk && dur !== undefined && (dur < P.TALK_MIN || dur > P.TALK_MAX);
@@ -507,7 +611,7 @@ export class Studio {
             ]
           : undefined,
       };
-    });
+    }).concat(tailTask);
   }
 
   private keyframeTasks(): ManualTask[] {
@@ -582,7 +686,7 @@ export class Studio {
         const tail = spec.bi < 0;
         // Motion only: the keyframe is the first frame, so the scene is not described again.
         const beat = tail
-          ? { action: `${P.clause(p.tail.action ?? "")}.${P.PULL_BACK}`, camera: "slow pull-back", sound: p.tail.sound, text: "" }
+          ? { action: `${P.clause(p.tail.action ?? "")}.${P.PULL_BACK}`, camera: "slow pull-back", sound: p.tail.sound, text: p.tail.text ?? "" }
           : { action: block!.action, camera: block!.camera, sound: block!.sound, text: block!.text };
         const veoWho = { name: who.name, tag: p.character.tag };
         const need = P.shotNeed(p, spec, i, true);
@@ -732,9 +836,11 @@ export class Studio {
     const lang = this.rec.lang || "id";
 
     // Build a plain-text script listing every line with its block number, for the vision prompt.
+    const closing = p.tail.text?.trim();
     const scriptLines = p.blocks
       .map((b, i) => `[${i + 1}] ${b.text}`)
-      .concat([`[${blockCount + 1}] (end card — no narration)`])
+      .concat(closing ? [`[${blockCount + 1}] ${closing}`] : [])
+      .concat([`[${blockCount + (closing ? 2 : 1)}] (end card — no narration)`])
       .join("\n");
 
     const systemPrompt = [
@@ -913,6 +1019,7 @@ export class Studio {
       await keepAsset(this.full(path), file);
       const entryCount = (finalText.match(/\d{2}:\d{2}:\d{2}[,:.]\d{3} --> /g) ?? finalText.match(/\d{2}:\d{2}[,:.]\d{3} --> /g) ?? []).length;
       const info: AssetInfo = { path, name: "subtitles.srt", size: file.size, at: Date.now() / 1000 };
+      this.applyLocation(info);
       this.st.srt = info;
       this.st.srtText = finalText;
       this.st.built = undefined;
@@ -951,8 +1058,11 @@ export class Studio {
           if (old?.audio && old.text === nb.text) nb.audio = old.audio;
         }
       }
+      const oldTail = this.st.plan?.tail;
+      if (oldTail?.audio && (oldTail.text ?? "") === (plan.tail.text ?? "")) plan.tail.audio = oldTail.audio;
       this.st.plan = plan;
       this.st.specs = this.st.specs?.length ? P.syncSpecs(plan, this.st.specs) : P.buildSpecs(plan);
+      if (oldTail && (oldTail.text ?? "") !== (plan.tail.text ?? "")) this.resetTailLine();
       this.st.edited = undefined;
       this.log("script", `“${plan.title} ${plan.subtitle}”: ${plan.blocks.length} blocks, narrator ${plan.character.name}`);
       for (const w of warnings) this.log("script", `Note: ${w}`);
@@ -961,10 +1071,12 @@ export class Studio {
     } else if (key === "script-edit") {
       const p = this.plan!;
       const { blocks, rewrites, bridges, tail } = D.applyContinuity(p.blocks, parsed, D.mostInserts(p.blocks.length), p.tail);
+      const lineChanged = !!tail && (tail.text ?? "") !== (p.tail.text ?? "");
       p.blocks = blocks;
       if (tail) p.tail = tail;
       D.numberPlan(p);
       this.st.specs = P.syncSpecs(p, this.specs);
+      if (lineChanged) this.resetTailLine();
       this.st.edited = { rewrites, bridges };
       this.log("script", `Script editor: ${rewrites} rewritten, ${bridges} bridging scene${bridges === 1 ? "" : "s"} added`);
     } else throw new Error(`nothing to paste into ${key}`);
@@ -986,6 +1098,20 @@ export class Studio {
     await this.save();
   }
 
+  /** The closing line changed: its recording and, in Veo Mode, the final shot (which speaks it) are stale. */
+  private resetTailLine() {
+    const p = this.plan;
+    if (!p) return;
+    p.tail.audio = undefined;
+    if (this.veoMode) {
+      const s = this.specOf(p.tail.shot);
+      if (s) {
+        s.clip = undefined;
+        s.checked = undefined;
+      }
+    }
+  }
+
   private place(key: string, info: AssetInfo | undefined) {
     if (key === "sheet") this.st.sheet = info;
     else if (key === "hero") this.st.hero = info;
@@ -994,7 +1120,9 @@ export class Studio {
     else if (key === "subtitle") this.st.srt = info;
     else if (key === "film") this.st.film = info;
     else if (key === "clean") this.st.clean = info;
-    else if (key.startsWith("voice:")) {
+    else if (key === `voice:${P.TAIL_ID}`) {
+      if (this.plan) this.plan.tail.audio = info;
+    } else if (key.startsWith("voice:")) {
       const b = this.blockOf(key.slice(6));
       if (b) b.audio = info;
     } else if (key.startsWith("key:")) {
@@ -1019,30 +1147,12 @@ export class Studio {
 
     // Check if the file has a native OS path (e.g. from Chromium/Electron/NW.js)
     const nativePath = (file as { path?: string })?.path;
-    let fullPath = typeof nativePath === "string" && nativePath ? nativePath : undefined;
-
-    if (fullPath) {
-      const sep = fullPath.includes("/") ? "/" : "\\";
-      const last = fullPath.lastIndexOf(sep);
-      if (last > 0) {
-        const folder = fullPath.slice(0, last);
-        if (!this.rec.folder_path) this.rec.folder_path = folder;
-      }
-    } else if (this.rec.folder_path) {
-      const sep = this.rec.folder_path.includes("/") ? "/" : "\\";
-      fullPath = `${this.rec.folder_path.replace(/[\\/]+$/, "")}${sep}${file.name}`;
-    }
 
     // When a custom file is picked, use its actual name directly
     const path = isExpected ? slotPath(slot, ext) : file.name;
     await keepAsset(this.full(path), file);
     const info = await measure(path, file, kind);
-    if (fullPath) {
-      info.fullPath = fullPath;
-      const sep = fullPath.includes("/") ? "/" : "\\";
-      const last = fullPath.lastIndexOf(sep);
-      if (last > 0) info.folder = fullPath.slice(0, last);
-    }
+    this.applyLocation(info, typeof nativePath === "string" ? nativePath : undefined);
     if ((kind === "audio" || kind === "video") && !info.duration) throw new Error("Could not read the length of that file; is it complete?");
     this.place(task.key, info);
     this.log(task.stage, `${task.title}: ${info.name}${info.duration ? ` · ${info.duration.toFixed(1)} s` : ""}`);
@@ -1065,11 +1175,7 @@ export class Studio {
     const rel = hit.path.startsWith(`${this.project}/`) ? hit.path.slice(this.project.length + 1) : hit.path;
     const kind = kindOfName(hit.path) ?? (task.kind === "json" || task.kind === "srt" ? "image" : task.kind);
     const info = await measure(rel, hit.file, kind);
-    if (this.rec.folder_path) {
-      const sep = this.rec.folder_path.includes("/") ? "/" : "\\";
-      info.fullPath = `${this.rec.folder_path.replace(/[\\/]+$/, "")}${sep}${info.name}`;
-      info.folder = this.rec.folder_path;
-    }
+    this.applyLocation(info);
     if ((kind === "audio" || kind === "video") && !info.duration) {
       throw new Error("Could not read the length of that file; is it complete?");
     }
@@ -1093,11 +1199,7 @@ export class Studio {
       const kind = kindOfName(hit.path) ?? (task.kind === "json" || task.kind === "srt" ? "image" : task.kind);
       const info = await measure(rel, hit.file, kind);
       if ((kind === "audio" || kind === "video") && !info.duration) continue;
-      if (this.rec.folder_path) {
-        const sep = this.rec.folder_path.includes("/") ? "/" : "\\";
-        info.fullPath = `${this.rec.folder_path.replace(/[\\/]+$/, "")}${sep}${info.name}`;
-        info.folder = this.rec.folder_path;
-      }
+      this.applyLocation(info);
       this.place(task.key, info);
       this.log(task.stage, `Picked up ${rel}${info.duration ? ` · ${info.duration.toFixed(1)} s` : ""}`);
       found++;
@@ -1258,6 +1360,8 @@ export class Studio {
       for (const b of p.blocks) {
         if (b.audio) narration[b.id] = (b.audio.fullPath ? b.audio.fullPath.replace(/\\/g, "/") : b.audio.path);
       }
+      const t = p.tail.audio;
+      if (t) narration[P.TAIL_ID] = t.fullPath ? t.fullPath.replace(/\\/g, "/") : t.path;
     }
     return renderKit({
       plan: p,

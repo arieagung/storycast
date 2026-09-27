@@ -141,7 +141,8 @@ function RefRow({ n, label, url, note, kind }: { n: number; label: string; url: 
 }
 
 function Result({ asset, folderPath }: { asset: AssetInfo; folderPath?: string }) {
-  const display = asset.fullPath || (folderPath ? `${folderPath.replace(/[\\/]+$/, "")}\\${asset.path}` : asset.path);
+  const sep = folderPath?.includes("/") && !folderPath?.includes("\\") ? "/" : "\\";
+  const display = asset.fullPath || (folderPath ? `${folderPath.replace(/[\\/]+$/, "")}${sep}${asset.path.replace(/[\\/]+/g, sep)}` : asset.path);
   return (
     <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
       <Check className="size-3.5 text-success" />
@@ -471,7 +472,7 @@ export function TaskCard({ task, actions, projectRoot, folderPath }: { task: Man
           className={cn("flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dashed p-2.5 transition-colors", drag ? "border-primary bg-primary/5" : "border-border-strong bg-background/30")}
         >
           <p className="min-w-0 text-[11.5px] text-muted-foreground">
-            Save it as <code className="font-mono text-foreground/80">{task.slot.base}</code> in <code className="font-mono text-foreground/80">{folderPath ? (task.slot.dir ? `${folderPath.replace(/[\\/]+$/, "")}\\${task.slot.dir}` : folderPath) : (task.slot.dir ? `${task.slot.dir}/` : "./")}</code> and it is picked up on its own, or drop it here.
+            Save it as <code className="font-mono text-foreground/80">{task.slot.base}</code> in <code className="font-mono text-foreground/80">{folderPath ? (task.slot.dir ? `${folderPath.replace(/[\\/]+$/, "")}${folderPath.includes("/") && !folderPath.includes("\\") ? "/" : "\\"}${task.slot.dir.replace(/[\\/]+/g, folderPath.includes("/") && !folderPath.includes("\\") ? "/" : "\\")}` : folderPath) : (task.slot.dir ? `${task.slot.dir}/` : "./")}</code> and it is picked up on its own, or drop it here.
           </p>
           <div className="flex items-center gap-2">
             {actions.onRefresh && (

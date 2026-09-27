@@ -118,7 +118,7 @@ export function keyframePrompt(c: Who, anchor: string, styleRef: boolean, scene:
     return `${lead}New film still, no characters in this frame. ${scene} No readable text anywhere. ${anchor}`;
   }
   // With character: Image 1 = model sheet, Image 2 = hero portrait, then prev keyframe?, then style ref?
-  const talk = talking ? ` ${c.name} faces the camera in a medium close-up, talking warmly with ${pron} mouth open.` : "";
+  const talk = talking ? ` ${c.name} is talking to the camera with ${pron} face clearly visible and mouth open.` : "";
   let n = 2; // sheet=1, hero=2
   const extraParts: string[] = [];
   if (prevKey) { n++; extraParts.push(` Image ${n} is the preceding shot: match its colour grade and rendering; keep its set only if this scene happens in the same place, otherwise paint the new setting the scene describes.`); }
@@ -158,7 +158,7 @@ export const spoken = (s: string) => `"${s.trim().replace(/"/g, "'")}"`;
  * carries the subject, set, lighting and style, so none of that is described again.
  * The narrator is introduced once by name and a short generic tag ("Patch, the felt bear"),
  * then referred to by name only. The camera move is its own sentence.
- * V blocks = off-screen voiceover; T blocks = on-camera lip-synced speech; an empty text = nobody speaks (tail).
+ * V blocks = off-screen voiceover; T blocks = on-camera lip-synced speech; the tail's closing line is off-screen too; an empty text = nobody speaks.
  * The spoken line is always wrapped in double quotes after a colon.
  * voiceDesc is one sentence repeated verbatim in every shot so the voice stays the same across clips.
  * Always ends with "No background music." so individual clips can be merged cleanly.
@@ -174,7 +174,7 @@ export function veoShotPrompt(
   const tag = clause(c.tag ?? "");
   const out: string[] = [];
   if (talking) {
-    out.push(`${tag ? `${c.name}, ${tag},` : c.name} faces the camera in a medium close-up and talks.`);
+    out.push(`${tag ? `${c.name}, ${tag},` : c.name} talks to the camera.`);
   } else if (withChar && tag) {
     out.push(`${cap(tag)} is ${c.name}.`);
   }
@@ -335,6 +335,35 @@ export function newRecord(input: JobInput): FilmRecord {
 export const blockDuration = (b: Block, specs: Spec[], veo = false) =>
   b.kind === "T" || veo ? (specs.find((s) => s.shot === b.shot)?.clip?.duration ?? 0) : (b.audio?.duration ?? 0);
 
+/** Key of the tail's spoken line in starts/lengths maps and its narration file (narration/tail.mp3). */
+export const TAIL_ID = "tail";
+/** Standard Mode: a breath between the cut to the tail and its line, and room after it for the pull-back and fade. */
+export const [TAIL_LEAD, TAIL_AFTER] = [0.5, 1.5];
+
+const wordCount = (s: string) => s.split(/\s+/).filter(Boolean).length;
+/** Veo Mode estimate of how long a line takes to say (~2.5 words/s). */
+const spokenEstimate = (s: string) => Math.ceil(wordCount(s) / 2.5) + 0.5;
+
+/** How long the tail runs in the cut. A spoken line stretches it past TAIL_DUR when needed. */
+export function tailDuration(plan: Plan, specs: Spec[], veo = false): number {
+  const line = (plan.tail.text ?? "").trim();
+  if (veo) {
+    const clip = specs.find((s) => s.shot === plan.tail.shot)?.clip?.duration;
+    return clip || (line ? Math.max(TAIL_DUR, spokenEstimate(line) + TAIL_AFTER) : TAIL_DUR);
+  }
+  const audio = line ? (plan.tail.audio?.duration ?? 0) : 0;
+  return Math.max(TAIL_DUR, audio ? TAIL_LEAD + audio + TAIL_AFTER : 0);
+}
+
+/** How long the tail's line is heard, for subtitle timing (0 when there is no line). */
+export function tailSpoken(plan: Plan, specs: Spec[], veo = false): number {
+  const line = (plan.tail.text ?? "").trim();
+  if (!line) return 0;
+  if (!veo) return plan.tail.audio?.duration ?? 0;
+  // The Veo clip is longer than the line (pull-back and fade), so the words get the estimated span.
+  return Math.min(spokenEstimate(line), tailDuration(plan, specs, true));
+}
+
 export type Cut = { shot: string; start: number; dur: number; talking: boolean };
 export type Timeline = { starts: Record<string, number>; segments: Cut[]; pictureEnd: number; total: number };
 
@@ -358,7 +387,8 @@ export function timeline(plan: Plan, specs: Spec[], veo = false): Timeline {
       dur: length[b.id],
       talking: b.kind === "T",
     }));
-    const tailDur = specs.find((s) => s.shot === plan.tail.shot)?.clip?.duration || TAIL_DUR;
+    const tailDur = tailDuration(plan, specs, true);
+    starts[TAIL_ID] = tailStart;
     segments.push({ shot: plan.tail.shot, start: tailStart, dur: tailDur, talking: false });
     const total = tailStart + tailDur + END_CARD;
     return { starts, segments, pictureEnd: tailStart + tailDur, total };
@@ -387,24 +417,26 @@ export function timeline(plan: Plan, specs: Spec[], veo = false): Timeline {
     segments.push({ shot: b.shot, start: s0, dur: d, talking: b.kind === "T" });
     vis = s0 + d;
   });
-  segments.push({ shot: plan.tail.shot, start: tailStart, dur: TAIL_DUR, talking: false });
-  return { starts, segments, pictureEnd: tailStart + TAIL_DUR, total: tailStart + TAIL_DUR + END_CARD };
+  const tailDur = tailDuration(plan, specs);
+  starts[TAIL_ID] = tailStart + TAIL_LEAD;
+  segments.push({ shot: plan.tail.shot, start: tailStart, dur: tailDur, talking: false });
+  return { starts, segments, pictureEnd: tailStart + tailDur, total: tailStart + tailDur + END_CARD };
 }
 
 /** Length used to order the score, before any shot exists. */
 export const filmLength = (plan: Plan, veo = false) =>
   veo
-    ? plan.blocks.length * (8 + 0) + TAIL_DUR + END_CARD  // estimate: 8 s avg per clip, no LEAD/GAP in Veo
-    : LEAD + sum(plan.blocks.map((b) => (b.audio?.duration ?? 0) + GAP)) + TAIL_DUR + END_CARD;
+    ? plan.blocks.length * (8 + 0) + tailDuration(plan, [], true) + END_CARD  // estimate: 8 s avg per clip, no LEAD/GAP in Veo
+    : LEAD + sum(plan.blocks.map((b) => (b.audio?.duration ?? 0) + GAP)) + tailDuration(plan, []) + END_CARD;
 
 export const musicLength = (plan: Plan, veo = false) => Math.min(600_000, ms(Math.max(30, filmLength(plan, veo) + 3)));
 
 /** The length to ask a video model for, per shot. */
 export function shotNeed(plan: Plan, spec: Spec, index: number, veo = false): number {
-  if (spec.bi < 0) return TAIL_DUR;
+  if (spec.bi < 0) return veo ? tailDuration(plan, [], true) : tailDuration(plan, []);
   const b = plan.blocks[spec.bi];
   // In Veo mode we don't have narration audio yet; use a sensible estimate from word count.
-  const dur = veo ? Math.max(5, Math.ceil(b.text.split(/\s+/).length / 2.5) + 0.5) : (b.audio?.duration ?? 0);
+  const dur = veo ? Math.max(5, spokenEstimate(b.text)) : (b.audio?.duration ?? 0);
   return dur + GAP + (index === 0 ? LEAD : 0);
 }
 
