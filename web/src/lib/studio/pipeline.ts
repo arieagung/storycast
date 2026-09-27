@@ -31,9 +31,32 @@ export const CHECKER = "google/gemini-3.8-flash";
 
 export const RES = "768P";
 export const FRAME = { width: 1344, height: 768 };
+export const FRAME_9_16 = { width: 768, height: 1344 };
 export const STYLE_REF_NOTE = "shows only the target art style: match its medium, linework, texture, lighting and palette; do not copy its content";
 export const WIDE = { width: 1920, height: 1088 };
 export const PORTRAIT = { width: 1088, height: 1440 };
+export const PORTRAIT_9_16 = { width: 1088, height: 1920 };
+
+export type FrameSize = { width: number; height: number };
+
+export function detectFrameFromAssets(assets: (AssetInfo | undefined)[], fallback: FrameSize = FRAME): FrameSize {
+  for (const a of assets) {
+    if (a?.width && a?.height) {
+      const w = a.width - (a.width % 2);
+      const h = a.height - (a.height % 2);
+      return { width: w, height: h };
+    }
+  }
+  return fallback;
+}
+
+export function aspectString(frame: FrameSize): string {
+  const ratio = frame.width / frame.height;
+  if (ratio < 0.7) return "9:16";
+  if (ratio > 1.4) return "16:9";
+  if (Math.abs(ratio - 1) < 0.15) return "1:1";
+  return `${frame.width}:${frame.height}`;
+}
 export const [LEAD, GAP, TAIL_DUR, END_CARD, FPS] = [1.5, 0.35, 8.0, 4.0, 24];
 export const [MUSIC_LUFS, FINAL_LUFS] = [-30, -16];
 export const [TALK_MIN, TALK_MAX] = [5.2, 14.6];
@@ -48,8 +71,27 @@ export const SHEET_CHECK_PROMPT =
   "film shot. Does any of them show a model sheet or turnaround layout instead of a real scene: the character " +
   'repeated side by side, a plain studio background, or a pose lineup like Image 1? Return {"sheet": true|false}.';
 
-type Who = { name: string; traits: string; pronoun: string };
+type Who = { name: string; traits: string; pronoun: string; tag?: string };
+/** Full description: only for drawing the model sheet and hero portrait, where there is no image to copy yet. */
 export const charLine = (c: Who) => `${c.name.toUpperCase()}, ${c.traits}`;
+
+/**
+ * What the narrator is, without how it looks ("the small hedgehog"). Prompts that already hand the
+ * model sheet over as images use this, so the traits are never re-described next to the pictures.
+ * Falls back to the head of the traits ("a small hedgehog with …" → "a small hedgehog") on old plans without a tag.
+ */
+export function charTag(c: Who): string {
+  const tag = (c.tag ?? "").trim().replace(/[.\s]+$/, "");
+  if (tag) return tag;
+  const head = (c.traits ?? "").split(/,|;|\s+with\s+|\s+wearing\s+/i)[0]?.trim() ?? "";
+  return /^(a|an|the)\s/i.test(head) && head.split(/\s+/).length <= 5 ? head : "";
+}
+
+/** "HAZEL, the small hedgehog", or just "HAZEL" when nothing short is known. */
+export const charRef = (c: Who) => {
+  const tag = charTag(c);
+  return tag ? `${c.name.toUpperCase()}, ${tag}` : c.name.toUpperCase();
+};
 
 /**
  * Strips image aspect ratio / composition instructions (e.g. "widescreen 16:9 composition.") from prompt or anchor text.
@@ -80,7 +122,7 @@ export function keyframePrompt(c: Who, anchor: string, styleRef: boolean, scene:
   const extraParts: string[] = [];
   if (prevKey) { n++; extraParts.push(` Image ${n} is the preceding shot: match its colour grade and rendering; keep its set only if this scene happens in the same place, otherwise paint the new setting the scene describes.`); }
   if (styleRef) { n++; extraParts.push(` Image ${n} ${STYLE_REF_NOTE}.`); }
-  return `Image 1 and Image 2 show ${charLine(c)}. Keep ${pron} design exactly.${extraParts.join("")} New film still: ${scene}${talk} No readable text anywhere. ${anchor}`;
+  return `Image 1 and Image 2 show ${charRef(c)}. Keep ${pron} design exactly as drawn there: same body, colors, clothing and accessories, nothing added or changed.${extraParts.join("")} New film still: ${scene}${talk} No readable text anywhere. ${anchor}`;
 }
 
 export function shotPrompt(c: Who, motion: string, b: { scene: string; action: string; camera?: string; sound?: string }, withChar: boolean) {
@@ -89,7 +131,7 @@ export function shotPrompt(c: Who, motion: string, b: { scene: string; action: s
   if (withChar)
     return (
       `Image 1 is the opening frame of this shot: ${b.scene} ${body} ` +
-      `Image 2 is a reference portrait of ${charLine(c)}, only for keeping ${c.name}'s look consistent: never show Image 2 ` +
+      `Image 2 is a reference portrait of ${charRef(c)}, only for keeping ${c.name}'s look consistent: never show Image 2 ` +
       `itself, never a character sheet, a lineup or several copies of ${c.name}. Nobody speaks: ${c.name}'s mouth stays closed. ${tail}`
     );
   return `Image 1 is the opening frame of this shot: ${b.scene} ${body} ${tail}`;
@@ -238,6 +280,10 @@ export type State = {
   hero?: AssetInfo;
   music?: AssetInfo;
   card?: AssetInfo;
+  /** User-supplied SRT file (pasted from an LLM vision tool). When present, overrides the auto-generated subtitles. */
+  srt?: AssetInfo;
+  /** Raw text of the user-supplied SRT, kept so the textarea can be pre-populated on redo. */
+  srtText?: string;
   film?: AssetInfo;
   clean?: AssetInfo;
   /** Epoch seconds the render kit was last written. */
@@ -294,8 +340,30 @@ export type Timeline = { starts: Record<string, number>; segments: Cut[]; pictur
 export function timeline(plan: Plan, specs: Spec[], veo = false): Timeline {
   const blocks = plan.blocks;
   const length: Record<string, number> = Object.fromEntries(blocks.map((b) => [b.id, blockDuration(b, specs, veo)]));
-  let t = LEAD;
+
+  // In Veo Mode clips are stitched directly — no LEAD/GAP padding.
+  // starts[] reflects cumulative clip positions for subtitle timing.
   const starts: Record<string, number> = {};
+  if (veo) {
+    let t = 0;
+    for (const b of blocks) {
+      starts[b.id] = t;
+      t += length[b.id];
+    }
+    const tailStart = t;
+    const segments: Cut[] = blocks.map((b) => ({
+      shot: b.shot,
+      start: starts[b.id],
+      dur: length[b.id],
+      talking: b.kind === "T",
+    }));
+    segments.push({ shot: plan.tail.shot, start: tailStart, dur: TAIL_DUR, talking: false });
+    const total = tailStart + TAIL_DUR + END_CARD;
+    return { starts, segments, pictureEnd: tailStart + TAIL_DUR, total };
+  }
+
+  // Standard Mode — LEAD + per-block GAP, V blocks stretch to fill the visual gap.
+  let t = LEAD;
   for (const b of blocks) {
     starts[b.id] = t;
     t += length[b.id] + GAP;
@@ -324,7 +392,7 @@ export function timeline(plan: Plan, specs: Spec[], veo = false): Timeline {
 /** Length used to order the score, before any shot exists. */
 export const filmLength = (plan: Plan, veo = false) =>
   veo
-    ? LEAD + plan.blocks.length * (8 + GAP) + TAIL_DUR + END_CARD  // estimate: 8 s avg per clip
+    ? plan.blocks.length * (8 + 0) + TAIL_DUR + END_CARD  // estimate: 8 s avg per clip, no LEAD/GAP in Veo
     : LEAD + sum(plan.blocks.map((b) => (b.audio?.duration ?? 0) + GAP)) + TAIL_DUR + END_CARD;
 
 export const musicLength = (plan: Plan, veo = false) => Math.min(600_000, ms(Math.max(30, filmLength(plan, veo) + 3)));

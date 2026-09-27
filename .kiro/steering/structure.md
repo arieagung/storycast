@@ -27,7 +27,7 @@ storycast/
 │   │   │   │   ├── film-player.tsx      # Video player with controls; resolves local: refs via useMediaUrl
 │   │   │   │   ├── films-page.tsx       # Local films library and management view
 │   │   │   │   ├── folder-bar.tsx       # Project folder binding (File System Access API).
-│   │   │   │   │                        # Works in Edge and Chrome; Brave needs "File editing" under Site permissions.
+│   │   │   │   │                        # Works in Edge and Chrome; Brave needs "File System Access API" enabled in brave://flags.
 │   │   │   │   │                        # Fallback: drop files onto each task card.
 │   │   │   │   ├── gallery.tsx          # Community films explore view
 │   │   │   │   ├── header.tsx           # Site navigation header with folder status indicator

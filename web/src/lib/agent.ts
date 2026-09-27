@@ -114,6 +114,8 @@ export async function agentBrief(ctx: AgentContext | null): Promise<string> {
       ? { name: r.uploaded.name || "{NAME}", traits: "{TRAITS}", pronoun: "{PRONOUN}" }
       : null;
   const who = given ?? { name: "{NAME}", traits: "{TRAITS}", pronoun: "{PRONOUN}" };
+  // Keyframe and shot prompts name the narrator by the script's short tag, never by the full traits.
+  const tagged = { ...who, tag: "{TAG}" };
   const styleRef = r.customLook || (r.look?.ref ? abs(r.look.ref) : "");
   const hasRef = Boolean(styleRef) || !r.look;
   const system = await D.directorSystem(look, r.minutes, r.lang, given, r.voice, false, r.narrative);
@@ -220,11 +222,11 @@ export async function agentBrief(ctx: AgentContext | null): Promise<string> {
     "## 2. Script edit",
     "",
     `Director call, system ${json(D.CONTINUITY_SYSTEM)}, \`max_tokens: min(32000, 6000 + 500 × blocks)\`, prompt below with {SCRIPT_JSON} =`,
-    "`[{index, kind, place, text, scene}]` of every block (up to floor(blocks / 5) inserts, at least 1; the number below is for the planned length):",
+    "`[{index, kind, place, text, scene}]` of every block, followed by `{index: \"tail\", kind: \"tail\", place: \"\", text: \"\", scene: tail.scene}` (up to floor(blocks / 5) inserts, at least 1; the number below is for the planned length):",
     "",
     ...fence("text", continuity),
     "",
-    "Apply each edit (`text`, `scene`, `place` when non-empty) to the block at `index`. Insert each valid insert (0 ≤ after < blocks, with text and scene) as a new V block after",
+    "Apply each edit (`text`, `scene`, `place` when non-empty) to the block at `index`; a non-empty `tail.scene` replaces the tail's scene. Insert each valid insert (0 ≤ after < blocks, with text and scene) as a new V block after",
     'block `after`, from the highest `after` down; missing fields default to action "The character moves on through the scene.", camera "gentle drift", sound',
     '"soft ambience", character_in_shot true. If the call fails, keep the script.',
     "",
@@ -270,10 +272,12 @@ export async function agentBrief(ctx: AgentContext | null): Promise<string> {
     `- With the narrator (\`character_in_shot\`, always for T): \`image_urls: ${urlsWith}\`.`,
     hasRef ? "- Without: `image_urls: [style reference]`." : `- Without: no reference images, \`${P.T2I}\`.`,
     "",
+    "{TAG} is the script's `character.tag`. Never paste the full traits here: the model sheet already shows the design.",
+    "",
     "V block with the narrator, and the tail:",
-    ...fence("text", P.keyframePrompt(who, look.anchor, hasRef, "{SCENE}", true, false)),
+    ...fence("text", P.keyframePrompt(tagged, look.anchor, hasRef, "{SCENE}", true, false)),
     "T block:",
-    ...fence("text", P.keyframePrompt(who, look.anchor, hasRef, "{SCENE}", true, true)),
+    ...fence("text", P.keyframePrompt(tagged, look.anchor, hasRef, "{SCENE}", true, true)),
     "Without the narrator:",
     ...fence("text", P.keyframePrompt(who, look.anchor, hasRef, "{SCENE}", false, false)),
     "",
@@ -293,7 +297,7 @@ export async function agentBrief(ctx: AgentContext | null): Promise<string> {
     `- Tail: the same with need = ${P.TAIL_DUR} s, camera "slow pull-back" and this appended to its action: ${json(P.PULL_BACK.trim())}`,
     "",
     "Shot prompt ({SCENE} is the scene its keyframe was made from; {ACTION} {CAMERA}. ends with a single period):",
-    ...fence("text", P.shotPrompt(who, look.motion, { scene: "{SCENE}", action: "{ACTION}", camera: "{CAMERA}", sound: "{SOUND}" }, true)),
+    ...fence("text", P.shotPrompt(tagged, look.motion, { scene: "{SCENE}", action: "{ACTION}", camera: "{CAMERA}", sound: "{SOUND}" }, true)),
     "Without the narrator:",
     ...fence("text", P.shotPrompt(who, look.motion, { scene: "{SCENE}", action: "{ACTION}", camera: "{CAMERA}", sound: "{SOUND}" }, false)),
     "",

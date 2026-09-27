@@ -1,5 +1,5 @@
 import type { Plan } from "./director";
-import { FRAME, namedRgb } from "./pipeline";
+import { FRAME, namedRgb, type FrameSize } from "./pipeline";
 
 /* ------------------------------------------------------------------ *\
    Subtitles
@@ -59,23 +59,25 @@ const escape = (s: string) => s.replaceAll("{", "(").replaceAll("}", ")").replac
 
 export type SubStyle = { font: string; accent: string; fontSize?: number; stroke?: number; marginV?: number };
 
-export function toAss(lines: SubLine[], style: SubStyle): string {
+export function toAss(lines: SubLine[], style: SubStyle, frame: FrameSize = FRAME): string {
   const accent = bgr(namedRgb(style.accent));
-  const size = style.fontSize ?? 54;
-  const stroke = style.stroke ?? 3;
-  const marginV = style.marginV ?? 40;
+  const scale = frame.height / 768;
+  const size = style.fontSize ?? Math.round(54 * scale);
+  const stroke = style.stroke ?? Math.max(2, Math.round(3 * scale));
+  const marginV = style.marginV ?? Math.round(40 * scale);
+  const marginH = Math.max(20, Math.round(80 * (frame.width / 1344)));
   const head = [
     "[Script Info]",
     "; Written by Storycast from the script and the narration lengths",
     "ScriptType: v4.00+",
-    `PlayResX: ${FRAME.width}`,
-    `PlayResY: ${FRAME.height}`,
+    `PlayResX: ${frame.width}`,
+    `PlayResY: ${frame.height}`,
     "WrapStyle: 2",
     "ScaledBorderAndShadow: yes",
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    `Style: Storycast,${style.font},${size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,${stroke},0,2,80,80,${marginV},1`,
+    `Style: Storycast,${style.font},${size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,${stroke},0,2,${marginH},${marginH},${marginV},1`,
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, Effect, Text",

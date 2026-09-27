@@ -42,7 +42,7 @@ export const refPath = (ref: string) => ref.slice(LOCAL.length);
 export const assetRef = (project: string, path: string) => `${LOCAL}${project}/${path}`;
 
 export type AssetInfo = {
-  /** Path inside the project folder, for example "keyframes/S01.png". */
+  /** Path inside the project folder, for example "keyframes/S01.png" or "01.mp4". */
   path: string;
   name: string;
   size: number;
@@ -53,6 +53,10 @@ export type AssetInfo = {
   height?: number;
   /** True when the bytes live in IndexedDB because no folder is bound. */
   held?: true;
+  /** Full native file path on disk if available (e.g. from Electron/Chromium file.path). */
+  fullPath?: string;
+  /** Native directory folder on disk if available. */
+  folder?: string;
 };
 
 export type AssetSlot = { dir: string; base: string; exts: string[] };
@@ -64,6 +68,8 @@ export const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp"];
 export const AUDIO_EXTS = ["mp3", "wav", "m4a", "aac", "ogg", "flac", "opus"];
 export const VIDEO_EXTS = ["mp4", "webm", "mov", "mkv", "m4v"];
 
+export const TEXT_EXTS = ["srt", "txt"];
+
 export type MediaKind = "image" | "audio" | "video";
 export const extsFor = (kind: MediaKind) => (kind === "image" ? IMAGE_EXTS : kind === "audio" ? AUDIO_EXTS : VIDEO_EXTS);
 export const kindOfName = (name: string): MediaKind | null => {
@@ -73,6 +79,22 @@ export const kindOfName = (name: string): MediaKind | null => {
   if (VIDEO_EXTS.includes(ext)) return "video";
   return null;
 };
+
+export const SLOTS = {
+  style: { dir: "input", base: "style", exts: IMAGE_EXTS },
+  character: { dir: "input", base: "character", exts: IMAGE_EXTS },
+  sheet: { dir: "character", base: "sheet", exts: IMAGE_EXTS },
+  hero: { dir: "character", base: "hero", exts: IMAGE_EXTS },
+  music: { dir: "music", base: "score", exts: AUDIO_EXTS },
+  card: { dir: "endcard", base: "card", exts: IMAGE_EXTS },
+  srt: { dir: "", base: "subtitles", exts: ["srt"] },
+  film: { dir: "", base: "film", exts: VIDEO_EXTS },
+  clean: { dir: "", base: "clean", exts: VIDEO_EXTS },
+} satisfies Record<string, AssetSlot>;
+
+export const narrationSlot = (id: string): AssetSlot => ({ dir: "narration", base: id, exts: AUDIO_EXTS });
+export const keySlot = (shot: string): AssetSlot => ({ dir: "keyframes", base: shot, exts: IMAGE_EXTS });
+export const shotSlot = (shot: string): AssetSlot => ({ dir: "shots", base: shot, exts: VIDEO_EXTS });
 
 /* ------------------------------------------------------------------ *\
    Binding the project folder
@@ -315,6 +337,13 @@ export async function measure(path: string, file: File | Blob, kind: MediaKind):
   const name = path.split("/").pop() || path;
   const base: AssetInfo = { path, name, size: file.size, at: Math.round(Date.now() / 1000) };
   if (!root) base.held = true;
+  const rawFullPath = (file as { path?: string })?.path;
+  if (typeof rawFullPath === "string" && rawFullPath) {
+    base.fullPath = rawFullPath;
+    const sep = rawFullPath.includes("/") ? "/" : "\\";
+    const last = rawFullPath.lastIndexOf(sep);
+    if (last > 0) base.folder = rawFullPath.slice(0, last);
+  }
   try {
     return { ...base, ...(kind === "image" ? await imageMeta(file) : await mediaMeta(file, kind)) };
   } catch {

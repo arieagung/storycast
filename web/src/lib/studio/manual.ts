@@ -1,7 +1,5 @@
 import {
-  AUDIO_EXTS,
-  IMAGE_EXTS,
-  VIDEO_EXTS,
+  SLOTS,
   assetRef,
   ensureDir,
   extsFor,
@@ -9,8 +7,11 @@ import {
   folderBound,
   join,
   keepAsset,
+  keySlot,
   kindOfName,
   measure,
+  narrationSlot,
+  shotSlot,
   slotPath,
   writeText,
   type AssetInfo,
@@ -24,6 +25,8 @@ import * as P from "./pipeline";
 import { bash, powershell, renderKit, type RenderKit } from "./render";
 import { saveRecord, type FilmRecord } from "./store";
 
+export { SLOTS, narrationSlot, keySlot, shotSlot };
+
 /* ------------------------------------------------------------------ *\
    A step you do yourself
 
@@ -34,8 +37,8 @@ import { saveRecord, type FilmRecord } from "./store";
    file name the answer has to be saved under.
 \* ------------------------------------------------------------------ */
 
-export type TaskKind = "json" | "image" | "audio" | "video";
-export type StageKey = "read" | "script" | "character" | "voice" | "keyframes" | "shots" | "music" | "endcard" | "edit";
+export type TaskKind = "json" | "image" | "audio" | "video" | "srt";
+export type StageKey = "read" | "script" | "character" | "voice" | "keyframes" | "shots" | "music" | "endcard" | "subtitle" | "edit";
 
 export type TaskRef = { n: number; label: string; url: string; kind: MediaKind; note?: string };
 export type TaskHelper = { title: string; note: string; model?: string; prompt: string; promptPlaceholders?: string[] };
@@ -78,6 +81,8 @@ export type ManualTask = {
   warn?: string;
   /** When true, indicates Veo Mode is active for this task. */
   veo?: boolean;
+  /** For JSON tasks, the current parsed state serialized as JSON for editing. */
+  currentJson?: string;
 };
 
 export type Stage = {
@@ -100,7 +105,8 @@ const STAGE_NOTES: Record<StageKey, [string, string]> = {
   shots: ["Shots", "Keyframes become moving shots; talking blocks are lip-synced"],
   music: ["Score", "One instrumental bed for the whole film"],
   endcard: ["End card", "The last keyframe, hand-lettered with the title"],
-  edit: ["Edit", "The cut, the mix and the subtitles, as one ffmpeg script you run"],
+  subtitle: ["Subtitles", "Paste SRT from an LLM vision tool, then burn it in"],
+  edit: ["Edit", "Run the render script to produce clean.mp4"],
 };
 
 /* ------------------------------------------------------------------ *\
@@ -109,21 +115,6 @@ const STAGE_NOTES: Record<StageKey, [string, string]> = {
 
 /** Joins system prompt and user prompt into one block, separated by a clear divider. */
 const joined = (system: string, user: string) => `${system}\n\n---\n\n${user}`;
-
-export const SLOTS = {
-  style: { dir: "input", base: "style", exts: IMAGE_EXTS },
-  character: { dir: "input", base: "character", exts: IMAGE_EXTS },
-  sheet: { dir: "character", base: "sheet", exts: IMAGE_EXTS },
-  hero: { dir: "character", base: "hero", exts: IMAGE_EXTS },
-  music: { dir: "music", base: "score", exts: AUDIO_EXTS },
-  card: { dir: "endcard", base: "card", exts: IMAGE_EXTS },
-  film: { dir: "", base: "film", exts: VIDEO_EXTS },
-  clean: { dir: "", base: "clean", exts: VIDEO_EXTS },
-} satisfies Record<string, AssetSlot>;
-
-export const narrationSlot = (id: string): AssetSlot => ({ dir: "narration", base: id, exts: AUDIO_EXTS });
-export const keySlot = (shot: string): AssetSlot => ({ dir: "keyframes", base: shot, exts: IMAGE_EXTS });
-export const shotSlot = (shot: string): AssetSlot => ({ dir: "shots", base: shot, exts: VIDEO_EXTS });
 
 const FOLDERS = ["input", "character", "narration", "keyframes", "shots", "music", "endcard", "build"];
 
@@ -158,6 +149,13 @@ export class Studio {
 
   get project() {
     return String(this.rec.project);
+  }
+  get folderPath(): string {
+    return this.rec.folder_path || "";
+  }
+  async setFolderPath(folder: string) {
+    this.rec.folder_path = folder.trim();
+    await this.save();
   }
   private full(path: string) {
     return join(this.project, path);
@@ -198,7 +196,7 @@ export class Studio {
 
   get narrator(): Given {
     const p = this.plan;
-    if (p) return { name: p.character.name, traits: p.character.traits, pronoun: p.character.pronoun };
+    if (p) return { name: p.character.name, traits: p.character.traits, pronoun: p.character.pronoun, tag: p.character.tag };
     if (this.cast) return { name: this.rec.character_name || this.cast.name, traits: this.cast.traits, pronoun: this.cast.pronoun };
     return this.st.narrator ?? { name: "Narrator", traits: "", pronoun: "its" };
   }
@@ -236,7 +234,26 @@ export class Studio {
    */
   get styleAnchor(): string {
     const raw = this.style?.anchor ?? "";
-    return this.veoMode ? P.stripRatio(raw) : raw;
+    return P.stripRatio(raw);
+  }
+
+  get detectedFrame(): P.FrameSize {
+    const clip = this.specs.find((s) => s.clip?.width && s.clip?.height)?.clip;
+    if (clip?.width && clip?.height) return { width: clip.width - (clip.width % 2), height: clip.height - (clip.height % 2) };
+    const key = this.specs.find((s) => s.key?.width && s.key?.height)?.key;
+    if (key?.width && key?.height) return { width: key.width - (key.width % 2), height: key.height - (key.height % 2) };
+    if (this.st.card?.width && this.st.card?.height) return { width: this.st.card.width - (this.st.card.width % 2), height: this.st.card.height - (this.st.card.height % 2) };
+    if (this.st.hero?.width && this.st.hero?.height) return { width: this.st.hero.width - (this.st.hero.width % 2), height: this.st.hero.height - (this.st.hero.height % 2) };
+    if (this.st.sheet?.width && this.st.sheet?.height) return { width: this.st.sheet.width - (this.st.sheet.width % 2), height: this.st.sheet.height - (this.st.sheet.height % 2) };
+    return P.FRAME;
+  }
+
+  get isPortrait(): boolean {
+    return this.detectedFrame.height > this.detectedFrame.width;
+  }
+
+  get aspectRatio(): string {
+    return P.aspectString(this.detectedFrame);
   }
 
   /**
@@ -277,6 +294,7 @@ export class Studio {
         clips: Object.fromEntries(this.specs.filter((s) => s.clip).map((s) => [s.shot, this.ref(s.clip)])),
         music: this.ref(st.music) || undefined,
         end_card: this.ref(st.card) || undefined,
+        srt: this.ref(st.srt) || undefined,
         film: this.ref(st.film) || undefined,
         clean: this.ref(st.clean) || undefined,
       },
@@ -318,7 +336,7 @@ export class Studio {
         stage: "read",
         kind: "json",
         title: "Describe your illustration style",
-        hint: "Show your uploaded illustration to a model that can read images and paste its answer back. The 'anchor' sentence it returns is appended to every image prompt in the film.",
+        hint: "Describe visual style from reference image.",
         model: P.VISION,
         modelNote: `${D.DIRECTOR_MODEL} (vision)`,
         prompt: joined(D.STYLE_SYSTEM, D.stylePrompt(this.veoMode)),
@@ -335,7 +353,7 @@ export class Studio {
         stage: "read",
         kind: "json",
         title: "Describe your character",
-        hint: "The traits you get back are pasted into every image prompt, so they have to be concrete and stable.",
+        hint: "Describe character traits from reference image.",
         model: P.VISION,
         modelNote: `${D.DIRECTOR_MODEL} (vision)`,
         prompt: joined(D.CHARACTER_SYSTEM, D.characterDescribePrompt(this.rec.character_name || "")),
@@ -357,7 +375,7 @@ export class Studio {
         stage: "script",
         kind: "json",
         title: "Write the film",
-        hint: `One JSON object with ${blocks} blocks, ${talk} of them spoken on camera. Everything downstream is built from it, so read it before you go on.`,
+        hint: `Script JSON (${blocks} blocks, ${talk} on camera).`,
         model: D.DIRECTOR_APP,
         modelNote: D.DIRECTOR_MODEL,
         prompt: joined(system, `TOPIC: ${this.rec.topic}`),
@@ -367,6 +385,7 @@ export class Studio {
           `{"title": "", "subtitle": "", "slug": "", "character": {"name": "", "traits": "", "pronoun": ""${this.veoMode ? ', "tag": ""' : ""}}, ${this.veoMode ? '"voice_desc": "", ' : '"voice_id": "", '}"music_prompt": "", ` +
           '"blocks": [{"kind": "V|T", "text": "", "place": "", "scene": "", "character_in_shot": true, "action": "", "camera": "", "sound": ""}], ' +
           '"tail": {"scene": "", "action": "", "camera": "", "sound": ""}}',
+        currentJson: this.plan ? JSON.stringify(this.plan, null, 2) : undefined,
         done: !!this.plan,
       },
     ];
@@ -378,13 +397,14 @@ export class Studio {
         stage: "script",
         kind: "json",
         title: "Smooth the flow",
-        hint: "Optional second pass. It rewrites blocks around jumps and can add bridging voice-overs, so the viewer never wonders how the film got somewhere. Skip it and the script is used as written.",
+        hint: "Optional continuity check.",
         model: D.DIRECTOR_APP,
         modelNote: D.DIRECTOR_MODEL,
         prompt: joined(D.CONTINUITY_SYSTEM, this.continuity ?? ""),
         params: { model: D.DIRECTOR_MODEL, max_tokens: Math.min(32000, 6000 + 500 * p.blocks.length), reasoning: true },
         refs: [],
         shape: `{"edits": [{"index": 0, "text": "", "scene": "", "place": ""}], "inserts": [{"after": 0, "text": "", "place": "", "scene": "", "character_in_shot": true, "action": "", "camera": "", "sound": ""}]}  · up to ${most} inserts`,
+        currentJson: this.st.edited ? JSON.stringify(this.st.edited, null, 2) : undefined,
         optional: true,
         done: this.st.edited !== undefined,
         warn:
@@ -418,7 +438,7 @@ export class Studio {
         stage: "character",
         kind: "image",
         title: `${this.narrator.name}: model sheet`,
-        hint: "Several views of the same character on a plain backdrop. Every keyframe with the narrator in it uses this as Image 1, so it matters more than it looks.",
+        hint: "Model sheet with multiple views.",
         model,
         prompt: pre + sheet,
         params: { image_size: P.WIDE, quality: "high" },
@@ -433,7 +453,7 @@ export class Studio {
         stage: "character",
         kind: "image",
         title: `${this.narrator.name}: hero portrait`,
-        hint: "A single full-body portrait. Used as Image 2 in keyframes and as the look reference in every animated shot.",
+        hint: "Full-body character portrait.",
         model,
         prompt: pre + hero,
         params: { image_size: P.PORTRAIT, quality: "high" },
@@ -460,9 +480,7 @@ export class Studio {
         stage: "voice",
         kind: "audio",
         title: `${b.id} · ${talk ? "on camera" : "voice-over"}`,
-        hint: talk
-          ? `Spoken on camera, so this recording also drives the lip-sync. It has to last ${P.TALK_MIN}-${P.TALK_MAX} s.`
-          : "Voice-over. Its length becomes this block's slot in the cut.",
+        hint: talk ? "On-camera speech." : "Voice-over narration.",
         model: P.TTS,
         modelNote: v?.name ? `${v.name} · ${v.voice_id}` : p.voice_id,
         prompt: b.text,
@@ -514,13 +532,7 @@ export class Studio {
         refs.push({ n: 1, label: "Style reference", url: this.styleRef, kind: "image", note: P.STYLE_REF_NOTE });
       }
       const plainPrompt = `${spec.scene} No readable text anywhere. ${this.styleAnchor}`;
-      const hint = withChar
-        ? hasPrevKey
-          ? "The narrator has to look exactly like the model sheet (Images 1 & 2). Image 3 is the preceding shot: match its colour grade, and its set only when the scene stays in the same place."
-          : "The narrator has to look exactly like the model sheet; that is what Image 1 and 2 are for."
-        : hasStyleRef
-          ? "No narrator in this frame. Image 1 is only the style reference; the scene is free to show whatever explains the line."
-          : "No narrator in this frame and no reference image; the style comes from the prompt alone.";
+      const hint = withChar ? "Keyframe with character." : "Keyframe.";
       return {
         key: `key:${spec.shot}`,
         stage: "keyframes",
@@ -529,11 +541,11 @@ export class Studio {
         hint,
         model: spec.plain || (!withChar && !hasStyleRef) ? P.T2I : P.EDIT,
         prompt: spec.plain ? plainPrompt : P.keyframePrompt(who, this.styleAnchor, hasStyleRef, spec.scene, withChar, spec.talking, hasPrevKey),
-        params: { image_size: P.WIDE, quality: "high" },
+        params: { image_size: this.isPortrait ? P.PORTRAIT_9_16 : P.WIDE, quality: "high" },
         refs: spec.plain ? [] : refs,
         slot: keySlot(spec.shot),
         asset: spec.key,
-        want: { size: P.WIDE },
+        want: { size: this.isPortrait ? P.PORTRAIT_9_16 : P.WIDE },
         shot: spec.shot,
         helpers: [
           {
@@ -585,23 +597,16 @@ export class Studio {
           stage: "shots",
           kind: "video",
           title: `${spec.shot}${tail ? " · final shot" : talking ? " · on camera" : ""}`,
-          hint: tail
-            ? "Veo Mode: the final pull-back shot. No spoken line; keep 'no background music' in the prompt."
-            : talking
-              ? `Veo Mode: ${who.name} speaks on camera — lip-sync is embedded. Use first-frame mode (keyframe as reference).`
-              : "Veo Mode: voice-over narration is embedded in the clip. Use first-frame or reference mode.",
+          hint: tail ? "Final closing shot." : talking ? `${who.name} on camera.` : "",
           model: P.VEO,
-          modelNote: "Veo 3 · first-frame or reference-to-video mode",
           prompt: P.veoShotPrompt(veoWho, style.motion, beat, withChar || tail, this.veoVoiceDesc, talking),
-          params: { aspect_ratio: "16:9", resolution: P.RES, duration: seconds },
+          params: { aspect_ratio: this.aspectRatio, resolution: P.RES, duration: seconds },
           refs,
           slot: shotSlot(spec.shot),
           asset: spec.clip,
           want: {
             seconds,
-            note: wordCount > 0
-              ? `${seconds} s asked; ~${wordCount} words at 2-3 wps ≈ ${Math.ceil(wordCount / 2.5)}-${Math.ceil(wordCount / 2)}`
-              : `${seconds} s`,
+            note: wordCount > 0 ? `~${wordCount} words` : undefined,
           },
           shot: spec.shot,
           done: !!spec.clip?.duration,
@@ -621,7 +626,7 @@ export class Studio {
           stage: "shots",
           kind: "video",
           title: `${spec.shot} · lip-sync`,
-          hint: "No prompt here: a lip-sync model animates the keyframe to the recording. Its own length becomes this block's slot in the cut.",
+          hint: "Lip-sync animation.",
           model: P.LIPSYNC,
           prompt: "",
           params: {
@@ -655,12 +660,10 @@ export class Studio {
         stage: "shots",
         kind: "video",
         title: `${spec.shot}${tail ? " · final shot" : ""}`,
-        hint: tail
-          ? "The shot the title is lettered over. It pulls back and leaves the upper third calm."
-          : "The keyframe is the first frame; the prompt only describes what moves.",
+        hint: tail ? "Final closing shot." : "",
         model: P.R2V,
         prompt: P.shotPrompt(who, style.motion, beat, withChar),
-        params: { aspect_ratio: "16:9", resolution: P.RES, duration: seconds, prompt_expansion_mode: "disabled" },
+        params: { aspect_ratio: this.aspectRatio, resolution: P.RES, duration: seconds, prompt_expansion_mode: "disabled" },
         refs,
         slot: shotSlot(spec.shot),
         asset: spec.clip,
@@ -687,14 +690,14 @@ export class Studio {
         stage: "music",
         kind: "audio",
         title: "Score",
-        hint: "One instrumental bed for the whole film. The edit drops it to a quiet level under the narration by itself.",
+        hint: "Instrumental background score.",
         model: P.MUSIC,
         prompt: p.music_prompt,
         params: { music_length_ms: length, force_instrumental: true, output_format: "mp3_48000_192" },
         refs: [],
         slot: SLOTS.music,
         asset: this.st.music,
-        want: { seconds: Math.round(length / 1000), note: `the film runs about ${Math.round(P.filmLength(p, this.veoMode))} s` },
+        want: { seconds: Math.round(length / 1000) },
         done: !!this.st.music,
       },
     ];
@@ -709,14 +712,14 @@ export class Studio {
         stage: "endcard",
         kind: "image",
         title: "End card",
-        hint: "The final keyframe with the title lettered into the calm space at the top. It is also the film's poster.",
+        hint: "Title card still.",
         model: P.EDIT,
         prompt: P.endCardPrompt(p.title, p.subtitle, this.styleAnchor),
-        params: { image_size: P.FRAME, quality: "high" },
+        params: { image_size: this.isPortrait ? P.FRAME_9_16 : P.FRAME, quality: "high" },
         refs: [{ n: 1, label: `Keyframe ${tail}`, url: this.keyRef(tail), kind: "image" }],
         slot: SLOTS.card,
         asset: this.st.card,
-        want: { size: P.FRAME },
+        want: { size: this.isPortrait ? P.FRAME_9_16 : P.FRAME },
         helpers: [
           {
             title: "If the lettering never comes out right",
@@ -729,34 +732,81 @@ export class Studio {
     ];
   }
 
-  private editTasks(): ManualTask[] {
+  private subtitleTasks(): ManualTask[] {
+    const p = this.plan!;
+    const blockCount = p.blocks.length;
+    const lang = this.rec.lang || "id";
+
+    // Build a plain-text script listing every line with its block number, for the vision prompt.
+    const scriptLines = p.blocks
+      .map((b, i) => `[${i + 1}] ${b.text}`)
+      .concat([`[${blockCount + 1}] (end card — no narration)`])
+      .join("\n");
+
+    const systemPrompt = [
+      "You are a subtitle generator. You receive a video and a transcript of the narration lines in order.",
+      "Your job is to produce a valid SRT subtitle file that matches the spoken narration precisely.",
+      "",
+      "Rules:",
+      "- Use ONLY the words from the provided transcript. Do not add, remove, or paraphrase any text.",
+      "- Listen carefully to the video audio to determine the exact start and end time of each narration line.",
+      "- Each subtitle entry must contain at most 7 words. If a narration line has more than 7 words, split it into multiple entries by cutting at natural phrase boundaries, distributing the timing proportionally across the words.",
+      "- Each entry must stay on screen for at least 1.0 second and at most 3.5 seconds.",
+      "- Timestamps must be in standard SRT format: HH:MM:SS,mmm --> HH:MM:SS,mmm",
+      "- Entries must be numbered sequentially starting from 1.",
+      "- Do not add any other text, comments, or explanation outside the SRT format.",
+      "- Language of the subtitles must match the narration: " + lang,
+    ].join("\n");
+
+    const userPrompt = [
+      "Here is the full narration transcript in order. Match every line to its timing in the video:",
+      "",
+      scriptLines,
+      "",
+      "Output a complete, valid SRT file. Start directly with entry number 1.",
+    ].join("\n");
+
     return [
       {
+        key: "subtitle",
+        stage: "subtitle",
+        kind: "srt",
+        title: "Generate subtitles",
+        hint: "Send build/picture.mp4 (the stitched video, no music) to an LLM vision tool with the prompt below, then paste the SRT output here.",
+        model: P.VISION,
+        prompt: joined(systemPrompt, userPrompt),
+        refs: [],
+        asset: this.st.srt,
+        currentJson: this.st.srtText,
+        done: !!this.st.srt,
+      },
+      {
         key: "film",
-        stage: "edit",
+        stage: "subtitle",
         kind: "video",
-        title: "Run the edit",
-        hint: "Nothing here is a model. The app writes the cut, the mix and the subtitles as one script; run it in the film's folder and drop the result back.",
+        title: "Burn subtitles",
+        hint: "Run the burn command shown above. It reads clean.mp4 and writes film.mp4.",
         model: "ffmpeg (local)",
         prompt: "",
         refs: [],
-        slot: SLOTS.film,
-        asset: this.st.film,
-        render: true,
         done: !!this.st.film,
       },
+    ];
+  }
+
+  private editTasks(): ManualTask[] {
+    return [
       {
         key: "clean",
         stage: "edit",
         kind: "video",
-        title: "Keep the version without subtitles",
-        hint: "The script writes clean.mp4 on the way. Pick it up too and the film page can toggle subtitles off.",
+        title: "Run the edit",
+        hint: "Run render.ps1 (Windows) or render.sh (macOS/Linux) inside the film folder. It produces clean.mp4.",
         model: "ffmpeg (local)",
         prompt: "",
         refs: [],
         slot: SLOTS.clean,
         asset: this.st.clean,
-        optional: true,
         done: !!this.st.clean,
       },
     ];
@@ -770,11 +820,11 @@ export class Studio {
     if (!this.style) return this.finalizeTasks(out);
 
     const system = await D.directorSystem(this.style, this.rec.minutes, this.rec.lang, this.given, this.voice, this.veoMode, this.narrative);
-    if (this.plan) this.continuity = await D.continuityPrompt(D.continuityScript(this.plan.blocks), this.rec.minutes, this.rec.lang, D.mostInserts(this.plan.blocks.length));
+    if (this.plan) this.continuity = await D.continuityPrompt(D.continuityScript(this.plan.blocks, this.plan.tail), this.rec.minutes, this.rec.lang, D.mostInserts(this.plan.blocks.length));
     if (!ready) return this.finalizeTasks(out);
     out.push(...this.scriptTasks(system));
     if (!this.plan) return this.finalizeTasks(out);
-    out.push(...this.characterTasks(), ...this.voiceTasks(), ...this.keyframeTasks(), ...this.shotTasks(), ...this.musicTasks(), ...this.endCardTasks(), ...this.editTasks());
+    out.push(...this.characterTasks(), ...this.voiceTasks(), ...this.keyframeTasks(), ...this.shotTasks(), ...this.musicTasks(), ...this.endCardTasks(), ...this.editTasks(), ...this.subtitleTasks());
     return this.finalizeTasks(out);
   }
 
@@ -795,8 +845,8 @@ export class Studio {
     const veo = this.veoMode;
     // In Veo mode there are no voice tasks, so skip the voice stage entirely.
     const keys: StageKey[] = veo
-      ? ["read", "script", "character", "keyframes", "shots", "music", "endcard", "edit"]
-      : ["read", "script", "character", "voice", "keyframes", "shots", "music", "endcard", "edit"];
+      ? ["read", "script", "character", "keyframes", "shots", "music", "endcard", "edit", "subtitle"]
+      : ["read", "script", "character", "voice", "keyframes", "shots", "music", "endcard", "edit", "subtitle"];
     const of = (k: StageKey) => all.filter((t) => t.stage === k);
     const ready = (k: StageKey) => {
       const list = of(k).filter((t) => !t.optional);
@@ -815,6 +865,7 @@ export class Studio {
         : [ready("voice"), "waiting for the narration, which sets the length"],
       endcard: [ready("keyframes"), "waiting for the final keyframe"],
       edit: [ready("shots") && ready("music") && ready("endcard"), "waiting for the shots, the score and the end card"],
+      subtitle: [ready("shots") && ready("music") && ready("endcard"), ""],
     };
     const out: Stage[] = [];
     for (const key of keys) {
@@ -847,6 +898,35 @@ export class Studio {
   /* --- taking answers -------------------------------------------- */
 
   async submit(key: string, raw: string) {
+    // SRT paste — handle before parseJson since the content is not JSON.
+    if (key === "subtitle") {
+      const text = (typeof raw === "string" ? raw : "").trim();
+      if (!text) throw new Error("Paste the SRT content into the field before confirming.");
+      // Accept both HH:MM:SS,mmm and MM:SS,mmm timestamp formats.
+      if (!/\d{1,2}:\d{2}[,:.]\d{3}/.test(text)) {
+        throw new Error("This doesn't look like a valid SRT file. Make sure it contains timestamp lines like 00:00:01,000 --> 00:00:03,500.");
+      }
+      // Normalise MM:SS,mmm → 00:MM:SS,mmm so the burn command gets standard SRT.
+      const normalised = text.replace(/^(\d+)\n(\d{2}:\d{2}[,:.]\d{3} --> \d{2}:\d{2}[,:.]\d{3})$/gm, (_, n, ts) => {
+        const fixTs = (t: string) => /^\d{2}:\d{2}[,:.]\d{3}$/.test(t) ? `00:${t}` : t;
+        const [from, to] = ts.split(" --> ");
+        return `${n}\n${fixTs(from)} --> ${fixTs(to)}`;
+      });
+      const finalText = normalised.endsWith("\n") ? normalised : normalised + "\n";
+      const path = "subtitles.srt";
+      const blob = new Blob([finalText], { type: "text/plain" });
+      const file = new File([blob], "subtitles.srt", { type: "text/plain" });
+      await keepAsset(this.full(path), file);
+      const entryCount = (finalText.match(/\d{2}:\d{2}:\d{2}[,:.]\d{3} --> /g) ?? finalText.match(/\d{2}:\d{2}[,:.]\d{3} --> /g) ?? []).length;
+      const info: AssetInfo = { path, name: "subtitles.srt", size: file.size, at: Date.now() / 1000 };
+      this.st.srt = info;
+      this.st.srtText = finalText;
+      this.st.built = undefined;
+      this.log("subtitle", `Subtitles: ${entryCount} entries pasted`);
+      await this.save();
+      return [];
+    }
+
     const parsed = D.parseJson(raw);
     if (key === "look") {
       const d = D.reviewStyle(parsed);
@@ -870,8 +950,15 @@ export class Studio {
     } else if (key === "script") {
       const { plan, warnings } = await D.reviewPlan(parsed, { minutes: this.rec.minutes, character: this.given, voice: this.voice, veo: this.veoMode });
       D.numberPlan(plan);
+      // Preserve existing audio recordings on blocks if block id and text match
+      if (this.st.plan?.blocks) {
+        for (const nb of plan.blocks) {
+          const old = this.st.plan.blocks.find((b) => b.id === nb.id);
+          if (old?.audio && old.text === nb.text) nb.audio = old.audio;
+        }
+      }
       this.st.plan = plan;
-      this.st.specs = P.buildSpecs(plan);
+      this.st.specs = this.st.specs?.length ? P.syncSpecs(plan, this.st.specs) : P.buildSpecs(plan);
       this.st.edited = undefined;
       this.log("script", `“${plan.title} ${plan.subtitle}”: ${plan.blocks.length} blocks, narrator ${plan.character.name}`);
       for (const w of warnings) this.log("script", `Note: ${w}`);
@@ -879,8 +966,9 @@ export class Studio {
       return warnings;
     } else if (key === "script-edit") {
       const p = this.plan!;
-      const { blocks, rewrites, bridges } = D.applyContinuity(p.blocks, parsed, D.mostInserts(p.blocks.length));
+      const { blocks, rewrites, bridges, tail } = D.applyContinuity(p.blocks, parsed, D.mostInserts(p.blocks.length), p.tail);
       p.blocks = blocks;
+      if (tail) p.tail = tail;
       D.numberPlan(p);
       this.st.specs = P.syncSpecs(p, this.specs);
       this.st.edited = { rewrites, bridges };
@@ -891,9 +979,16 @@ export class Studio {
   }
 
   async skip(key: string) {
-    if (key !== "script-edit") throw new Error(`${key} cannot be skipped`);
-    this.st.edited = null;
-    this.log("script", "Script editor pass skipped");
+    if (key === "script-edit") {
+      this.st.edited = null;
+      this.log("script", "Script editor pass skipped");
+    } else if (key === "subtitle") {
+      // Skipping means use the auto-generated subtitles.ass — clear any previously pasted SRT.
+      this.st.srt = undefined;
+      this.log("subtitle", "Subtitle step skipped — using auto-generated subtitles");
+    } else {
+      throw new Error(`${key} cannot be skipped`);
+    }
     await this.save();
   }
 
@@ -902,6 +997,7 @@ export class Studio {
     else if (key === "hero") this.st.hero = info;
     else if (key === "music") this.st.music = info;
     else if (key === "endcard") this.st.card = info;
+    else if (key === "subtitle") this.st.srt = info;
     else if (key === "film") this.st.film = info;
     else if (key === "clean") this.st.clean = info;
     else if (key.startsWith("voice:")) {
@@ -916,19 +1012,75 @@ export class Studio {
     } else throw new Error(`no file belongs to ${key}`);
   }
 
-  /** Takes a file you point at or drop, measures it, and files it under the name the step expects. */
+  /** Takes a file you point at or drop, measures it, and files it. Uses the expected slot path if matching, or real filename if picked otherwise. */
   async attach(task: ManualTask, file: File) {
     const slot = task.slot;
     if (!slot) throw new Error(`${task.key} does not take a file`);
-    const kind: MediaKind = task.kind === "json" ? "image" : task.kind;
+    const kind: MediaKind = task.kind === "json" || task.kind === "srt" ? "image" : task.kind;
     const ext = (file.name.split(".").pop() || "").toLowerCase();
     if (!slot.exts.includes(ext)) throw new Error(`${task.title} expects ${slot.exts.map((e) => `.${e}`).join(", ")}, not .${ext}`);
-    const path = slotPath(slot, ext);
+    const dot = file.name.lastIndexOf(".");
+    const base = dot > 0 ? file.name.slice(0, dot) : file.name;
+    const isExpected = base.toLowerCase() === slot.base.toLowerCase();
+
+    // Check if the file has a native OS path (e.g. from Chromium/Electron/NW.js)
+    const nativePath = (file as { path?: string })?.path;
+    let fullPath = typeof nativePath === "string" && nativePath ? nativePath : undefined;
+
+    if (fullPath) {
+      const sep = fullPath.includes("/") ? "/" : "\\";
+      const last = fullPath.lastIndexOf(sep);
+      if (last > 0) {
+        const folder = fullPath.slice(0, last);
+        if (!this.rec.folder_path) this.rec.folder_path = folder;
+      }
+    } else if (this.rec.folder_path) {
+      const sep = this.rec.folder_path.includes("/") ? "/" : "\\";
+      fullPath = `${this.rec.folder_path.replace(/[\\/]+$/, "")}${sep}${file.name}`;
+    }
+
+    // When a custom file is picked, use its actual name directly
+    const path = isExpected ? slotPath(slot, ext) : file.name;
     await keepAsset(this.full(path), file);
     const info = await measure(path, file, kind);
+    if (fullPath) {
+      info.fullPath = fullPath;
+      const sep = fullPath.includes("/") ? "/" : "\\";
+      const last = fullPath.lastIndexOf(sep);
+      if (last > 0) info.folder = fullPath.slice(0, last);
+    }
     if ((kind === "audio" || kind === "video") && !info.duration) throw new Error("Could not read the length of that file; is it complete?");
     this.place(task.key, info);
     this.log(task.stage, `${task.title}: ${info.name}${info.duration ? ` · ${info.duration.toFixed(1)} s` : ""}`);
+    await this.save();
+    return info;
+  }
+
+  /** Reads the expected file for a task from the bound project folder. */
+  async readExpected(task: ManualTask): Promise<AssetInfo> {
+    const slot = task.slot;
+    if (!slot) throw new Error(`${task.title} does not take a file`);
+    let hit = await findAsset(this.full(slot.dir), slot.base, slot.exts);
+    if (!hit && slot.dir) hit = await findAsset(slot.dir, slot.base, slot.exts);
+    if (!hit) hit = await findAsset("", slot.base, slot.exts);
+    if (!hit) {
+      const folderName = this.rec.folder_path || this.project;
+      const expected = slotPath(slot);
+      throw new Error(`File not found: ${join(folderName, expected)}`);
+    }
+    const rel = hit.path.startsWith(`${this.project}/`) ? hit.path.slice(this.project.length + 1) : hit.path;
+    const kind = kindOfName(hit.path) ?? (task.kind === "json" || task.kind === "srt" ? "image" : task.kind);
+    const info = await measure(rel, hit.file, kind);
+    if (this.rec.folder_path) {
+      const sep = this.rec.folder_path.includes("/") ? "/" : "\\";
+      info.fullPath = `${this.rec.folder_path.replace(/[\\/]+$/, "")}${sep}${info.name}`;
+      info.folder = this.rec.folder_path;
+    }
+    if ((kind === "audio" || kind === "video") && !info.duration) {
+      throw new Error("Could not read the length of that file; is it complete?");
+    }
+    this.place(task.key, info);
+    this.log(task.stage, `Picked up ${rel}${info.duration ? ` · ${info.duration.toFixed(1)} s` : ""}`);
     await this.save();
     return info;
   }
@@ -939,12 +1091,19 @@ export class Studio {
     let found = 0;
     for (const task of list) {
       if (task.done || !task.slot) continue;
-      const hit = await findAsset(this.full(task.slot.dir), task.slot.base, task.slot.exts);
+      let hit = await findAsset(this.full(task.slot.dir), task.slot.base, task.slot.exts);
+      if (!hit && task.slot.dir) hit = await findAsset(task.slot.dir, task.slot.base, task.slot.exts);
+      if (!hit) hit = await findAsset("", task.slot.base, task.slot.exts);
       if (!hit) continue;
-      const rel = hit.path.slice(this.project.length + 1);
-      const kind = kindOfName(hit.path) ?? (task.kind === "json" ? "image" : task.kind);
+      const rel = hit.path.startsWith(`${this.project}/`) ? hit.path.slice(this.project.length + 1) : hit.path;
+      const kind = kindOfName(hit.path) ?? (task.kind === "json" || task.kind === "srt" ? "image" : task.kind);
       const info = await measure(rel, hit.file, kind);
       if ((kind === "audio" || kind === "video") && !info.duration) continue;
+      if (this.rec.folder_path) {
+        const sep = this.rec.folder_path.includes("/") ? "/" : "\\";
+        info.fullPath = `${this.rec.folder_path.replace(/[\\/]+$/, "")}${sep}${info.name}`;
+        info.folder = this.rec.folder_path;
+      }
       this.place(task.key, info);
       this.log(task.stage, `Picked up ${rel}${info.duration ? ` · ${info.duration.toFixed(1)} s` : ""}`);
       found++;
@@ -963,6 +1122,10 @@ export class Studio {
         this.st.specs = undefined;
         this.st.edited = undefined;
       } else if (task.key === "script-edit") this.st.edited = undefined;
+    } else if (task.kind === "srt") {
+      this.st.srt = undefined;
+      // Keep srtText so the textarea is pre-populated when the user wants to edit.
+      this.st.built = undefined;
     } else this.place(task.key, undefined);
     if (task.stage === "shots" && task.shot) {
       const spec = this.specOf(task.shot);
@@ -1102,27 +1265,33 @@ export class Studio {
     const p = this.plan;
     if (!p) throw new Error("there is no script yet");
     const shots: Record<string, string> = {};
-    for (const s of this.specs) if (s.clip) shots[s.shot] = s.clip.path;
+    for (const s of this.specs) {
+      if (s.clip) shots[s.shot] = (s.clip.fullPath ? s.clip.fullPath.replace(/\\/g, "/") : s.clip.path);
+    }
     const narration: Record<string, string> = {};
     // In Veo mode narration is embedded in each shot clip — no separate audio files.
     if (!this.veoMode) {
-      for (const b of p.blocks) if (b.audio) narration[b.id] = b.audio.path;
+      for (const b of p.blocks) {
+        if (b.audio) narration[b.id] = (b.audio.fullPath ? b.audio.fullPath.replace(/\\/g, "/") : b.audio.path);
+      }
     }
     return renderKit({
       plan: p,
       specs: this.specs,
       shots,
       narration,
-      music: this.st.music?.path ?? "",
-      card: this.st.card?.path ?? "",
+      music: this.st.music?.fullPath ? this.st.music.fullPath.replace(/\\/g, "/") : (this.st.music?.path ?? ""),
+      card: this.st.card?.fullPath ? this.st.card.fullPath.replace(/\\/g, "/") : (this.st.card?.path ?? ""),
       font: this.language?.font ?? "Nunito",
       accent: P.namedColor(this.style?.palette?.accent ?? "#f0a45a"),
       lang: this.rec.lang,
       veo: this.veoMode,
+      frame: this.detectedFrame,
+      srtPath: this.st.srt ? (this.st.srt.fullPath ?? this.full(this.st.srt.path)) : undefined,
     });
   }
 
-  /** The files the edit needs, ready to be written into the folder or downloaded. */
+  /** The files the edit needs (render scripts + concat/filter lists), ready to be written or downloaded. */
   kitFiles(kit = this.kit()) {
     const title = `${this.plan?.title ?? this.rec.topic} ${this.plan?.subtitle ?? ""}`.trim();
     return [
@@ -1132,17 +1301,32 @@ export class Studio {
     ];
   }
 
-  /** Writes the render kit into the project folder. Returns false when there is no folder to write to. */
+  /** The subtitle files (subtitles.ass fallback + subtitles.srt), written when the subtitle stage starts. */
+  burnFiles(kit = this.kit()) {
+    return kit.burnFiles;
+  }
+
+  /** Writes the render kit (edit files) into the project folder. Returns false when there is no folder to write to. */
   async build(): Promise<boolean> {
-    const files = this.kitFiles();
+    const kit = this.kit();
+    const files = this.kitFiles(kit);
     if (!folderBound()) return false;
     await ensureDir(this.full("build"));
-    for (const f of files) if (!(await writeText(this.full(f.path), f.text))) return false;
+    await ensureDir("build");
+    for (const f of files) {
+      await writeText(this.full(f.path), f.text);
+      await writeText(f.path, f.text);
+    }
+    // Also write subtitle files now so they're ready before the subtitle stage.
+    for (const f of kit.burnFiles) {
+      await writeText(this.full(f.path), f.text);
+      await writeText(f.path, f.text);
+    }
     this.st.built = Math.round(Date.now() / 1000);
-    this.log("edit", `Render kit written: ${files.length} files`);
+    this.log("edit", `Render kit written: ${files.length + kit.burnFiles.length} files`);
     await this.save();
     return true;
   }
 }
 
-export const taskExts = (task: ManualTask) => task.slot?.exts ?? extsFor(task.kind === "json" ? "image" : task.kind);
+export const taskExts = (task: ManualTask) => task.slot?.exts ?? extsFor(task.kind === "json" || task.kind === "srt" ? "image" : task.kind);

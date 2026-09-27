@@ -45,6 +45,7 @@ export function FilmPlayer({ src, cleanSrc, poster, autoPlay = false, className 
   const [hover, setHover] = useState<{ x: number; t: number } | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
   const [flash, setFlash] = useState<{ id: number; icon: "play" | "pause" | "back" | "fwd" } | null>(null);
+  const [isVertical, setIsVertical] = useState(false);
 
   // Files made by hand live in the project folder, so every source is resolved before it reaches the element.
   const srcUrl = useMediaUrl(src);
@@ -169,7 +170,8 @@ export function FilmPlayer({ src, cleanSrc, poster, autoPlay = false, className 
       onMouseMove={poke}
       onMouseLeave={() => playing && setIdle(true)}
       className={cn(
-        "group/player relative isolate aspect-video w-full overflow-hidden rounded-2xl bg-black outline-none ring-primary/50 focus-visible:ring-2",
+        "group/player relative isolate w-full overflow-hidden rounded-2xl bg-black outline-none ring-primary/50 focus-visible:ring-2",
+        isVertical && !full ? "aspect-[9/16] max-h-[75vh] w-auto mx-auto" : "aspect-video",
         full && "rounded-none",
         !showChrome && "cursor-none",
         className,
@@ -205,6 +207,7 @@ export function FilmPlayer({ src, cleanSrc, poster, autoPlay = false, className 
         }}
         onLoadedMetadata={(e) => {
           const v = e.currentTarget;
+          if (v.videoHeight > v.videoWidth) setIsVertical(true);
           setDur(v.duration);
           if (resume.current) {
             v.currentTime = resume.current.t;

@@ -7,6 +7,7 @@ import { FolderBar } from "@/components/app/folder-bar";
 import { downloadFile } from "@/components/app/lightbox";
 import { CopyButton, TaskCard } from "@/components/app/task-card";
 import { CharacterSwapDialog } from "@/components/app/character-swap-dialog";
+import { ScriptEditorDialog } from "@/components/app/script-editor-dialog";
 import { Button } from "@/components/motion/button/base";
 import { api, clock } from "@/lib/api";
 import { EASE_OUT } from "@/lib/ease";
@@ -22,10 +23,9 @@ import { cn } from "@/lib/utils";
 
 function SectionNav({ stages, activeKey }: { stages: Stage[]; activeKey: string | null }) {
   if (!stages.length) return null;
-  // A stage is expanded when it is open or when one of its tasks is active.
   const activeStage = stages.find((s) => s.tasks.some((t) => `task-${t.key}` === activeKey))?.key ?? activeKey?.replace("stage-", "");
   return (
-    <nav aria-label="Jump to section" className="sticky top-24 flex flex-col gap-0.5 self-start">
+    <nav aria-label="Jump to section" className="sticky top-24 flex max-h-[calc(100vh-7rem)] w-48 flex-col gap-0.5 overflow-y-auto pr-1 self-start">
       {stages.map((s) => {
         const dot =
           s.state === "done"
@@ -34,9 +34,8 @@ function SectionNav({ stages, activeKey }: { stages: Stage[]; activeKey: string 
               ? "bg-primary"
               : "bg-muted-foreground/30";
         const stageActive = activeStage === s.key;
-        const expanded = s.state !== "locked" && (stageActive || s.state === "open");
         return (
-          <div key={s.key}>
+          <div key={s.key} className="flex flex-col">
             <a
               href={`#stage-${s.key}`}
               onClick={(e) => {
@@ -45,22 +44,22 @@ function SectionNav({ stages, activeKey }: { stages: Stage[]; activeKey: string 
               }}
               aria-current={stageActive && !activeKey?.startsWith("task-") ? "location" : undefined}
               className={cn(
-                "group flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs transition-colors",
+                "group flex items-center gap-2 rounded-xl px-2.5 py-1.5 text-xs font-medium transition-colors",
                 stageActive && !activeKey?.startsWith("task-")
                   ? "bg-muted text-foreground"
                   : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
               )}
             >
               <span className={cn("size-1.5 shrink-0 rounded-full transition-colors", dot)} />
-              <span className="truncate max-w-[7rem]">{s.label}</span>
-              {s.total > 0 && (
+              <span className="truncate max-w-[7.5rem]">{s.label}</span>
+              {s.total > 0 && s.key !== "edit" && s.key !== "subtitle" && (
                 <span className={cn("ml-auto shrink-0 font-mono text-[10px] tabular-nums", s.state === "done" ? "text-success" : "text-muted-foreground")}>
                   {s.done}/{s.total}
                 </span>
               )}
             </a>
-            {expanded && s.tasks.length > 1 && (
-              <div className="ml-5 flex flex-col gap-0.5 border-l border-border pl-2 py-0.5">
+            {s.tasks.length > 0 && s.key !== "edit" && s.key !== "subtitle" && (
+              <div className="ml-4 flex flex-col gap-0.5 border-l border-border/80 pl-2 py-0.5">
                 {s.tasks.map((t) => {
                   const taskActive = activeKey === `task-${t.key}`;
                   return (
@@ -72,10 +71,11 @@ function SectionNav({ stages, activeKey }: { stages: Stage[]; activeKey: string 
                         document.getElementById(`task-${t.key}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
                       }}
                       aria-current={taskActive ? "location" : undefined}
+                      title={t.title}
                       className={cn(
-                        "flex items-center gap-2 rounded-lg px-2 py-1 text-[11px] transition-colors",
+                        "flex items-center gap-1.5 rounded-lg px-2 py-0.5 text-[11px] transition-colors",
                         taskActive
-                          ? "bg-muted text-foreground"
+                          ? "bg-muted font-medium text-foreground"
                           : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
                       )}
                     >
@@ -84,6 +84,13 @@ function SectionNav({ stages, activeKey }: { stages: Stage[]; activeKey: string 
                     </a>
                   );
                 })}
+              </div>
+            )}
+            {s.tasks.length === 0 && s.state === "locked" && (
+              <div className="ml-4 border-l border-border/40 pl-2 py-0.5">
+                <span className="truncate text-[10px] text-muted-foreground/50 italic">
+                  {s.locked ? "Locked" : "Pending"}
+                </span>
               </div>
             )}
           </div>
@@ -115,7 +122,7 @@ function RenderPanel({ studio, onBuilt }: { studio: Studio; onBuilt: () => void 
       <div>
         <p className="text-sm font-medium">The cut, worked out for you</p>
         <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-          {kit.steps.length} ffmpeg steps, {Math.round(kit.total)} s of film. Subtitles are written from the script and the narration lengths, so nothing has to be transcribed.
+          {kit.steps.length} ffmpeg steps, {Math.round(kit.total)} s of film. Runs the cut and mix and leaves clean.mp4 — no subtitles yet.
           {kit.ambience.length ? ` ${kit.ambience.length} shot${kit.ambience.length === 1 ? "" : "s"} keep their own sound.` : " Shot sound is left out; turn it on per shot above."}
         </p>
       </div>
@@ -153,7 +160,7 @@ function RenderPanel({ studio, onBuilt }: { studio: Studio; onBuilt: () => void 
           <p className="flex items-center gap-1.5 text-xs font-medium">
             <Check className="size-3.5 text-success" /> Written into the folder
           </p>
-          <p className="mt-1 text-[11.5px] text-muted-foreground">Now run it in the film&apos;s folder. It leaves film.mp4 and clean.mp4 next to the script.</p>
+          <p className="mt-1 text-[11.5px] text-muted-foreground">Run it in the film&apos;s folder. It leaves clean.mp4 next to the script. After the subtitle step, run the burn command to produce film.mp4.</p>
           <div className="mt-2 flex flex-col gap-1.5">
             {[
               ["Windows", `powershell -ExecutionPolicy Bypass -File .\\render.ps1`],
@@ -174,6 +181,13 @@ function RenderPanel({ studio, onBuilt }: { studio: Studio; onBuilt: () => void 
           <Terminal className="mr-1.5 inline size-3.5" /> Every command, if you would rather run them one at a time
         </summary>
         <div className="flex flex-col gap-2 px-3 pb-3">
+          <div className="rounded-lg border border-border bg-background/60 p-2.5 text-[11.5px] text-muted-foreground">
+            <span className="font-medium text-foreground">Note:</span> FFmpeg requires the output directory to exist before writing files. Run this once in PowerShell first:
+            <div className="mt-1.5 flex items-center justify-between gap-2 rounded bg-muted px-2 py-1 font-mono text-[10.5px] text-foreground">
+              <span className="truncate">New-Item -ItemType Directory -Force -Path build | Out-Null</span>
+              <CopyButton text="New-Item -ItemType Directory -Force -Path build | Out-Null" />
+            </div>
+          </div>
           {kit.steps.map((s, i) => (
             <div key={i} className="rounded-lg border border-border bg-background/60">
               <div className="flex items-center justify-between gap-2 border-b border-border px-2.5 py-1.5">
@@ -193,22 +207,62 @@ function RenderPanel({ studio, onBuilt }: { studio: Studio; onBuilt: () => void 
   );
 }
 
+function BurnPanel({ studio }: { studio: Studio }) {
+  let kit: ReturnType<Studio["kit"]> | null = null;
+  try {
+    kit = studio.kit();
+  } catch {
+    kit = null;
+  }
+  if (!kit) return null;
+  const s = kit.burnStep;
+  const hasSrt = !!studio.st.srt;
+
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-border-strong bg-card/60 p-3.5">
+      <div>
+        <p className="text-sm font-medium">Burn subtitles into the film</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+          Run this command in the film&apos;s folder after pasting the SRT above.
+          {hasSrt ? " Using the SRT you pasted." : " No SRT pasted — will use the auto-generated subtitles.ass."}
+        </p>
+      </div>
+      <div className="rounded-lg border border-border bg-background/60">
+        <div className="flex items-center justify-between gap-2 border-b border-border px-2.5 py-1.5">
+          <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+            <span className="text-foreground/80">{s.label}</span> · {s.note}
+          </span>
+          <CopyButton text={s.command} />
+        </div>
+        <pre className="overflow-x-auto px-2.5 py-2 font-mono text-[10.5px] whitespace-pre-wrap text-foreground/80">{s.command}</pre>
+      </div>
+      {!hasSrt && (
+        <p className="text-[11px] text-muted-foreground">
+          Paste an SRT above to use your own timing, or run the command as-is to burn the auto-generated subtitles.
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ *\
    The board
 \* ------------------------------------------------------------------ */
 
 function stageItems(stages: Stage[]): TodoItem[] {
-  return stages.map((s) => ({
-    id: s.key,
-    title: s.label,
-    status: s.state === "done" ? "completed" : s.state === "locked" ? "pending" : "in-progress",
-    progress: s.total ? Math.round((s.done / s.total) * 100) : undefined,
-    detail: (
-      <span className="block max-w-[12rem] truncate text-[11px] sm:max-w-[15rem]">
-        {s.state === "locked" ? s.locked : s.total ? `${s.done} of ${s.total} done` : s.note}
-      </span>
-    ),
-  }));
+  return stages
+    .filter((s) => s.key !== "edit" && s.key !== "subtitle")
+    .map((s) => ({
+      id: s.key,
+      title: s.label,
+      status: s.state === "done" ? "completed" : s.state === "locked" ? "pending" : "in-progress",
+      progress: s.total ? Math.round((s.done / s.total) * 100) : undefined,
+      detail: (
+        <span className="block max-w-[12rem] truncate text-[11px] sm:max-w-[15rem]">
+          {s.state === "locked" ? s.locked : s.total ? `${s.done} of ${s.total} done` : s.note}
+        </span>
+      ),
+    }));
 }
 
 export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => void }) {
@@ -220,6 +274,7 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [swapOpen, setSwapOpen] = useState(false);
+  const [scriptEditorOpen, setScriptEditorOpen] = useState(false);
   const [config, setConfig] = useState<Awaited<ReturnType<typeof api.config>> | null>(null);
   const { state: folder } = useFolder();
   const busy = useRef(false);
@@ -299,6 +354,12 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
       await studio!.attach(task, f);
       await refresh();
     },
+    onRefresh: task.slot
+      ? async () => {
+          await studio!.readExpected(task);
+          await refresh();
+        }
+      : undefined,
     onClear: async () => {
       await studio!.clear(task);
       await refresh();
@@ -385,7 +446,16 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
         </div>
       </div>
 
-      <FolderBar project={studio.project} onSync={() => void sync()} syncing={syncing} />
+      <FolderBar
+        project={studio.project}
+        folderPath={studio.folderPath}
+        onSetFolderPath={async (p) => {
+          await studio!.setFolderPath(p);
+          await refresh();
+        }}
+        onSync={() => void sync()}
+        syncing={syncing}
+      />
       {found !== null && (
         <p className="text-[11.5px] text-muted-foreground">{found ? `Picked up ${found} file${found === 1 ? "" : "s"}.` : "Nothing new in the folder yet."}</p>
       )}
@@ -462,9 +532,18 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
           <TodoList items={stageItems(stages)} title="Steps" collapseOnComplete={false} maxHeight={460} />
           {plan && (
             <div className="rounded-2xl border border-border bg-background/50 p-3">
-              <p className="text-xs text-muted-foreground">
-                Script · narrated by <span className="text-foreground">{plan.character.name}</span>
-              </p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-muted-foreground">
+                  Script · narrated by <span className="text-foreground">{plan.character.name}</span>
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setScriptEditorOpen(true)}
+                  className="rounded-full border border-border bg-background/60 px-2 py-0.5 text-[11px] font-medium text-primary hover:border-border-strong hover:bg-muted"
+                >
+                  Edit / Update
+                </button>
+              </div>
               <ol className="mt-2 flex max-h-64 flex-col gap-2 overflow-y-auto pr-1 text-[12.5px] leading-relaxed">
                 {plan.blocks.map((b, i) => (
                   <li key={b.id || i} className="flex gap-2.5">
@@ -499,7 +578,7 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
                   {stage.state === "locked" && <Lock className="size-3.5 text-muted-foreground" />}
                   {stage.state === "done" && <Check className="size-3.5 text-success" />}
                   {stage.label}
-                  {stage.total > 1 && (
+                  {stage.total > 1 && stage.key !== "edit" && stage.key !== "subtitle" && (
                     <span className="font-mono text-[11px] text-muted-foreground">
                       {stage.done}/{stage.total}
                     </span>
@@ -510,13 +589,18 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
               {stage.key === "edit" && stage.state !== "locked" && <RenderPanel studio={studio} onBuilt={() => void refresh()} />}
               {stage.tasks.length > 0 && (
                 <div className="flex flex-col gap-3">
-                  {stage.tasks.map((task) => (
-                    <div key={task.key} id={`task-${task.key}`} className="scroll-mt-28">
-                      <TaskCard task={task} actions={actionsFor(task)} projectRoot={studio.project} />
-                    </div>
-                  ))}
+                  {stage.tasks
+                    // In edit and subtitle stages the video-output tasks (clean.mp4, film.mp4)
+                    // are represented by RenderPanel and BurnPanel — hide their TaskCards.
+                    .filter((task) => !(task.kind === "video" && (stage.key === "edit" || stage.key === "subtitle")))
+                    .map((task) => (
+                      <div key={task.key} id={`task-${task.key}`} className="scroll-mt-28">
+                        <TaskCard task={task} actions={actionsFor(task)} projectRoot={studio.project} folderPath={studio.folderPath} />
+                      </div>
+                    ))}
                 </div>
               )}
+              {stage.key === "subtitle" && stage.state !== "locked" && <BurnPanel studio={studio} />}
             </section>
           ))}
           {!stages.length && (
@@ -540,6 +624,19 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
         currentId={studio.rec.character_id ?? ""}
         currentName={studio.rec.character_name ?? ""}
         onConfirm={onChangeCharacter}
+      />
+    )}
+
+    {plan && (
+      <ScriptEditorDialog
+        open={scriptEditorOpen}
+        onOpenChange={setScriptEditorOpen}
+        plan={plan}
+        onConfirm={async (raw) => {
+          const w = await studio!.submit("script", raw);
+          await refresh();
+          return w;
+        }}
       />
     )}
   </>
