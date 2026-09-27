@@ -123,7 +123,6 @@ function RenderPanel({ studio, onBuilt }: { studio: Studio; onBuilt: () => void 
         <p className="text-sm font-medium">The cut, worked out for you</p>
         <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
           {kit.steps.length} ffmpeg steps, {Math.round(kit.total)} s of film. Runs the cut and mix and leaves clean.mp4 — no subtitles yet.
-          {kit.ambience.length ? ` ${kit.ambience.length} shot${kit.ambience.length === 1 ? "" : "s"} keep their own sound.` : " Shot sound is left out; turn it on per shot above."}
         </p>
       </div>
 
@@ -368,7 +367,6 @@ export function StudioPanel({ id, onChanged }: { id: string; onChanged?: () => v
     onDemote: task.block?.kind === "T" ? async () => (await studio!.demote(task.block!.id), refresh()) : undefined,
     onScene: task.stage === "keyframes" && task.shot ? async (s: string) => (await studio!.rescene(task.shot!, s), refresh()) : undefined,
     onPlain: task.stage === "keyframes" && task.shot ? async (on: boolean) => (await studio!.plainly(task.shot!, on), refresh()) : undefined,
-    onMute: task.stage === "shots" && task.shot ? async (on: boolean) => (await studio!.mute(task.shot!, on), refresh()) : undefined,
     onConfirm: task.stage === "shots" && task.shot && task.warn ? async () => (await studio!.confirmShot(task.shot!), refresh()) : undefined,
   });
 

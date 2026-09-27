@@ -75,8 +75,6 @@ export type ManualTask = {
   block?: { id: string; kind: "V" | "T" };
   /** Keyframe and shot tasks carry the shot name so the scene can be rewritten. */
   shot?: string;
-  /** Shot tasks only: true when this shot's own sound is dropped from the mix. */
-  muted?: boolean;
   done: boolean;
   warn?: string;
   /** When true, indicates Veo Mode is active for this task. */
@@ -611,11 +609,9 @@ export class Studio {
           shot: spec.shot,
           done: !!spec.clip?.duration,
           warn:
-            spec.clip?.duration !== undefined && spec.clip.duration + 0.05 < need
-              ? `${spec.clip.duration.toFixed(1)} s is shorter than the ${P.r3(need)} s slot; the last frame will be held to fill it`
-              : spec.clip && !spec.checked
-                ? "Check the result: if it shows a model-sheet layout rather than a real scene, click Redo."
-                : undefined,
+            spec.clip && !spec.checked
+              ? "Check the result: if it shows a model-sheet layout rather than a real scene, click Redo."
+              : undefined,
         } satisfies ManualTask;
       }
 
@@ -643,7 +639,6 @@ export class Studio {
           asset: spec.clip,
           want: { seconds: block.audio?.duration, note: "as long as the recording" },
           shot: spec.shot,
-          muted: !spec.keep_sound,
           done: !!spec.clip?.duration,
         } satisfies ManualTask;
       }
@@ -669,7 +664,6 @@ export class Studio {
         asset: spec.clip,
         want: { seconds, note: `${seconds} s asked for, ${P.r3(need)} s used in the cut` },
         shot: spec.shot,
-        muted: !spec.keep_sound,
         done: !!spec.clip?.duration,
         warn:
           spec.clip?.duration !== undefined && spec.clip.duration + 0.05 < need
@@ -1190,16 +1184,6 @@ export class Studio {
     const spec = this.specOf(shot);
     if (!spec) throw new Error("unknown shot");
     spec.checked = true;
-    await this.save();
-  }
-
-  /** Keeps or drops one shot's own sound in the mix. */
-  async mute(shot: string, keep: boolean) {
-    const spec = this.specOf(shot);
-    if (!spec) throw new Error("unknown shot");
-    spec.keep_sound = keep ? true : undefined;
-    this.st.built = undefined;
-    this.log("shots", `${shot}: sound ${keep ? "kept" : "dropped"}`);
     await this.save();
   }
 

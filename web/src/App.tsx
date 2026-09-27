@@ -8,11 +8,9 @@ import { Hero } from "@/components/app/hero";
 import { StudioPanel } from "@/components/app/studio-panel";
 import { ProjectRow } from "@/components/app/project-row";
 import { AnimatedToastStack, useAnimatedToastStack } from "@/components/motion/animated-toast-stack";
-import { AgentPromptButton } from "@/components/app/agent-button";
 import { community } from "@/lib/share";
 import { api, type Config, type Film, type Job, type NewJob } from "@/lib/api";
 import { navigate, usePath } from "@/lib/router";
-import { TextReveal } from "@/components/motion/text-reveal";
 
 const JOB_KEY = "storycast-job";
 
@@ -112,17 +110,6 @@ export default function App() {
           <FilmsPage films={everything} loading={filmsLoading} cast={config?.characters ?? []} />
         ) : path.startsWith("/create") ? (
           <div className="flex flex-col gap-6 pt-8">
-            <header className="flex flex-wrap items-end justify-between gap-4">
-              <div>
-                <h1 className="text-3xl font-medium tracking-tight">
-                  <TextReveal text="Make a film" />
-                </h1>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Pick a topic, a look and a voice. The app writes every prompt and tells you what to save where; you run the models.
-                </p>
-              </div>
-              <AgentPromptButton />
-            </header>
             <ProjectRow projects={projects} current={current} onOpen={open} onDiscard={discard} onNew={() => (setCurrent(null), remember(null), navigate("/create"))} />
             {production}
             {!current &&

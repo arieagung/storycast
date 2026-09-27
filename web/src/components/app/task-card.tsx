@@ -22,7 +22,7 @@ import { useEffect, useRef, useState } from "react";
 import { Art } from "@/components/app/lightbox";
 import { Button } from "@/components/motion/button/base";
 import { EASE_OUT } from "@/lib/ease";
-import { downloadRef, isLocalRef, slotLabel, slotPath, useMediaUrl, type AssetInfo } from "@/lib/studio/assets";
+import { downloadRef, isLocalRef, useMediaUrl, type AssetInfo } from "@/lib/studio/assets";
 import type { ManualTask } from "@/lib/studio/manual";
 
 /** Label shown above the prompt field, based on what the task expects. */
@@ -198,7 +198,6 @@ type Actions = {
   onDemote?: () => Promise<void>;
   onScene?: (scene: string) => Promise<void>;
   onPlain?: (on: boolean) => Promise<void>;
-  onMute?: (on: boolean) => Promise<void>;
   onConfirm?: () => Promise<void>;
 };
 
@@ -227,13 +226,6 @@ export function TaskCard({ task, actions, projectRoot, folderPath }: { task: Man
   };
 
   const Icon = task.kind === "json" || task.kind === "srt" ? Sparkles : task.kind === "image" ? ImageIcon : task.kind === "audio" ? Volume2 : FileVideo;
-  const out = task.asset?.fullPath
-    ? task.asset.fullPath
-    : task.asset
-      ? (folderPath ? `${folderPath.replace(/[\\/]+$/, "")}\\${task.asset.path}` : task.asset.path)
-      : task.slot
-        ? (folderPath ? `${folderPath.replace(/[\\/]+$/, "")}\\${slotPath(task.slot)}` : slotLabel(task.slot))
-        : "";
 
   return (
     <motion.div
@@ -279,21 +271,6 @@ export function TaskCard({ task, actions, projectRoot, folderPath }: { task: Man
               <RotateCcw className="size-3" /> Redo
             </button>
           </div>
-        )}
-      </div>
-
-      {/* what the original called, so you know which of your own models to use */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="text-muted-foreground/60">was</span>
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10.5px] text-foreground/80">{task.model}</code>
-        </span>
-        {task.modelNote && <span>{task.modelNote}</span>}
-        {out && (
-          <span className="inline-flex items-center gap-1.5">
-            <span className="text-muted-foreground/60">{task.asset ? "saved as" : "save as"}</span>
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10.5px] text-foreground/80">{out}</code>
-          </span>
         )}
       </div>
 
@@ -562,32 +539,6 @@ export function TaskCard({ task, actions, projectRoot, folderPath }: { task: Man
             )}
           </div>
         </Fold>
-      )}
-
-      {actions.onMute && task.done && (
-        <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-muted-foreground">
-          <span>This shot&apos;s own sound:</span>
-          {(
-            [
-              [false, "dropped"],
-              [true, "kept in the mix"],
-            ] as const
-          ).map(([on, label]) => (
-            <button
-              key={label}
-              type="button"
-              disabled={busy}
-              aria-pressed={!!task.muted === !on}
-              onClick={() => run(() => actions.onMute!(on))}
-              className={cn(
-                "rounded-full border px-2.5 py-1 text-[11px] transition-colors",
-                !!task.muted === !on ? "border-border-strong bg-muted text-foreground" : "border-border hover:border-border-strong hover:text-foreground",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
       )}
 
       {task.helpers?.length ? (

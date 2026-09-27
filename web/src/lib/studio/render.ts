@@ -1,6 +1,6 @@
 import { SLOTS, narrationSlot, shotSlot, slotPath } from "./assets";
 import type { Plan } from "./director";
-import { COMPOSE, END_CARD, FINAL_LUFS, FPS, FRAME, LOUDNORM, MERGE, MERGE_AV, MUSIC_LUFS, STILL, SUBTITLE, TRIM, blockDuration, detectFrameFromAssets, timeline, type FrameSize, type Spec } from "./pipeline";
+import { CARD_FADE, COMPOSE, END_CARD, FINAL_LUFS, FPS, FRAME, LOUDNORM, MERGE, MERGE_AV, MUSIC_LUFS, STILL, SUBTITLE, TRIM, blockDuration, detectFrameFromAssets, timeline, type FrameSize, type Spec } from "./pipeline";
 import { subtitleLines, toAss, toSrt } from "./subtitles";
 
 /* ------------------------------------------------------------------ *\
@@ -82,39 +82,59 @@ export function renderKit(src: RenderSource): RenderKit {
   const { plan, specs } = src;
   const frame = src.frame ?? detectFrameFromAssets(specs.map((s) => s.clip).concat(specs.map((s) => s.key)), FRAME);
   const scale = `scale=${frame.width}:${frame.height}:force_original_aspect_ratio=increase,crop=${frame.width}:${frame.height}`;
-  const { starts, segments, total } = timeline(plan, specs, src.veo);
+  const { starts, segments, pictureEnd, total } = timeline(plan, specs, src.veo);
   const steps: RenderKit["steps"] = [];
   const cuts: string[] = [];
   const ambience: string[] = [];
   const filter: string[] = [];
 
+  const cardVf = [
+    scale,
+    `fps=${FPS}`,
+    `fade=t=in:st=0:d=${CARD_FADE}`,
+    `fade=t=out:st=${r3(END_CARD - CARD_FADE)}:d=${CARD_FADE}`,
+    "format=yuv420p",
+  ].join(",");
+
   if (src.veo) {
     // VEO MODE — clips already contain embedded narration; stitch them directly.
     // Step 1: Re-encode each clip to a common resolution/fps, preserving audio.
     segments.forEach((seg, i) => {
+      const isTail = i === segments.length - 1;
       const spec = specs.find((s) => s.shot === seg.shot);
       const source = src.shots[seg.shot] || slotPath(shotSlot(seg.shot));
       const out = `build/cut-${nn(i)}-${seg.shot}.mp4`;
       cuts.push(out);
-      const clipDur = spec?.clip?.duration ?? 0;
+      const clipDur = spec?.clip?.duration ?? seg.dur;
       // No -t trim, no -an, no tpad — the clip is already the right length.
-      const vf = [scale, `fps=${FPS}`, "format=yuv420p"].join(",");
+      const vfParts = [scale, `fps=${FPS}`];
+      if (isTail) {
+        const fadeDur = r3(Math.min(CARD_FADE, clipDur));
+        const fadeSt = r3(Math.max(0, clipDur - fadeDur));
+        vfParts.push(`fade=t=out:st=${fadeSt}:d=${fadeDur}`);
+      }
+      vfParts.push("format=yuv420p");
+      const vf = vfParts.join(",");
+
+      const afArg = isTail
+        ? `-af "afade=t=out:st=${r3(Math.max(0, clipDur - Math.min(CARD_FADE, clipDur)))}:d=${r3(Math.min(CARD_FADE, clipDur))}" `
+        : "";
+
       steps.push({
         label: `Normalize ${seg.shot}`,
-        note: `${r3(clipDur)} s · re-encode to ${frame.width}×${frame.height} ${FPS} fps, keep audio`,
-        command: `ffmpeg -y -hide_banner -i "${source}" -vf "${vf}" ${V_CODEC} -c:a aac -b:a 192k -ar 48000 "${out}"`,
+        note: `${r3(clipDur)} s · re-encode to ${frame.width}×${frame.height} ${FPS} fps, keep audio${isTail ? ", fade to black" : ""}`,
+        command: `ffmpeg -y -hide_banner -i "${source}" -vf "${vf}" ${V_CODEC} ${afArg}-c:a aac -b:a 192k -ar 48000 "${out}"`,
       });
-      if (spec?.keep_sound) ambience.push(seg.shot);
     });
 
-    // Step 2: End card (same as Standard Mode).
+    // Step 2: End card with fade transitions and silent audio stream to maintain stream parity in concat.
     const card = `build/cut-${nn(segments.length)}-endcard.mp4`;
     cuts.push(card);
     const cardSource = src.card || slotPath(SLOTS.card);
     steps.push({
       label: "End card",
-      note: `${END_CARD} s still · replaces ${STILL}`,
-      command: `ffmpeg -y -hide_banner -loop 1 -i "${cardSource}" -t ${END_CARD} -vf "${scale},fps=${FPS},format=yuv420p" ${V_CODEC} -an "${card}"`,
+      note: `${END_CARD} s still · fade in & out transitions · replaces ${STILL}`,
+      command: `ffmpeg -y -hide_banner -loop 1 -i "${cardSource}" -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 -t ${END_CARD} -vf "${cardVf}" ${V_CODEC} -c:a aac -b:a 192k -shortest "${card}"`,
     });
 
     // Step 3: Concat all clips with audio into one track.
@@ -127,17 +147,18 @@ export function renderKit(src: RenderSource): RenderKit {
     // Step 4: Mix — layer score under the embedded audio from the stitched track.
     if (src.music) {
       const musicInputs = `-i "build/picture.mp4" -i "${src.music}"`;
+      const fadeSt = r3(pictureEnd);
       const musicFilter = [
-        `[1:a]aresample=48000,loudnorm=I=${MUSIC_LUFS}:TP=-2:print_format=none[score]`,
+        `[1:a]aresample=48000,loudnorm=I=${MUSIC_LUFS}:TP=-2:print_format=none,afade=t=out:st=${fadeSt}:d=${END_CARD}[score]`,
         `[0:a][score]amix=inputs=2:duration=first:normalize=0[sum]`,
-        `[sum]loudnorm=I=${FINAL_LUFS}:TP=-1.5:print_format=none[mix]`,
+        `[sum]loudnorm=I=${FINAL_LUFS}:TP=-1.5:print_format=none,afade=t=out:st=${fadeSt}:d=${END_CARD}[mix]`,
       ];
       steps.push({
         label: "Score",
-        note: `mix score under embedded narration, loudness ${FINAL_LUFS} LUFS · replaces ${COMPOSE} + ${LOUDNORM} + ${MERGE_AV}`,
+        note: `mix score under embedded narration, fade out score during end card, loudness ${FINAL_LUFS} LUFS · replaces ${COMPOSE} + ${LOUDNORM} + ${MERGE_AV}`,
         command:
           `ffmpeg -y -hide_banner ${musicInputs} -filter_complex "${musicFilter.join("; ")}" ` +
-          `-map 0:v -map "[mix]" -c:v copy -c:a aac -b:a 192k -movflags +faststart "clean.mp4"`,
+          `-map 0:v -map "[mix]" -c:v copy -c:a aac -b:a 192k -movflags +faststart -t ${r3(total)} "clean.mp4"`,
       });
     } else {
       // No music — just copy picture.mp4 as the clean output.
@@ -151,28 +172,40 @@ export function renderKit(src: RenderSource): RenderKit {
     // STANDARD MODE — narration is separate; clips must be trimmed to their timeline slots.
     // Step 1: Every shot cut to the slot the timeline gives it.
     segments.forEach((seg, i) => {
+      const isTail = i === segments.length - 1;
       const spec = specs.find((s) => s.shot === seg.shot);
       const source = src.shots[seg.shot] || slotPath(shotSlot(seg.shot));
       const out = `build/cut-${nn(i)}-${seg.shot}.mp4`;
       cuts.push(out);
       const pad = r3(seg.dur - (spec?.clip?.duration ?? seg.dur));
-      const vf = [scale, pad > 0.02 ? `tpad=stop_mode=clone:stop_duration=${r3(pad + 0.2)}` : "", `fps=${FPS}`, "format=yuv420p"].filter(Boolean).join(",");
+      const vfParts = [scale];
+      if (pad > 0.02) {
+        vfParts.push(`tpad=stop_mode=clone:stop_duration=${r3(pad + 0.2)}`);
+      }
+      vfParts.push(`fps=${FPS}`);
+      if (isTail) {
+        const fadeDur = r3(Math.min(CARD_FADE, seg.dur));
+        const fadeSt = r3(Math.max(0, seg.dur - fadeDur));
+        vfParts.push(`fade=t=out:st=${fadeSt}:d=${fadeDur}`);
+      }
+      vfParts.push("format=yuv420p");
+      const vf = vfParts.join(",");
+
       steps.push({
         label: `Cut ${seg.shot}`,
-        note: `${r3(seg.dur)} s slot${pad > 0.02 ? `, held ${r3(pad)} s on its last frame` : ""} · replaces ${TRIM}`,
+        note: `${r3(seg.dur)} s slot${pad > 0.02 ? `, held ${r3(pad)} s on its last frame` : ""}${isTail ? ", fade to black" : ""} · replaces ${TRIM}`,
         command: `ffmpeg -y -hide_banner -i "${source}" -an -vf "${vf}" -t ${r3(seg.dur)} -r ${FPS} ${V_CODEC} "${out}"`,
       });
-      if (spec?.keep_sound && source) ambience.push(seg.shot);
     });
 
-    // Step 2: End card.
+    // Step 2: End card with fade transitions.
     const card = `build/cut-${nn(segments.length)}-endcard.mp4`;
     cuts.push(card);
     const cardSource = src.card || slotPath(SLOTS.card);
     steps.push({
       label: "End card",
-      note: `${END_CARD} s still · replaces ${STILL}`,
-      command: `ffmpeg -y -hide_banner -loop 1 -i "${cardSource}" -t ${END_CARD} -vf "${scale},fps=${FPS},format=yuv420p" ${V_CODEC} "${card}"`,
+      note: `${END_CARD} s still · fade in & out transitions · replaces ${STILL}`,
+      command: `ffmpeg -y -hide_banner -loop 1 -i "${cardSource}" -t ${END_CARD} -vf "${cardVf}" ${V_CODEC} -an "${card}"`,
     });
 
     // Step 3: One picture track.
@@ -205,17 +238,18 @@ export function renderKit(src: RenderSource): RenderKit {
       index++;
     }
     if (src.music) {
+      const fadeSt = r3(pictureEnd);
       inputs.push(`-i "${src.music}"`);
-      filter.push(`[${index}:a]aresample=48000,loudnorm=I=${MUSIC_LUFS}:TP=-2:print_format=none[score]`);
+      filter.push(`[${index}:a]aresample=48000,loudnorm=I=${MUSIC_LUFS}:TP=-2:print_format=none,afade=t=out:st=${fadeSt}:d=${END_CARD}[score]`);
       legs.push("[score]");
       index++;
     }
     filter.push(`${legs.join("")}amix=inputs=${legs.length}:duration=longest:normalize=0[sum]`);
-    filter.push(`[sum]loudnorm=I=${FINAL_LUFS}:TP=-1.5:print_format=none,apad,atrim=0:${r3(total)},asetpts=N/SR/TB[mix]`);
+    filter.push(`[sum]loudnorm=I=${FINAL_LUFS}:TP=-1.5:print_format=none,afade=t=out:st=${r3(pictureEnd)}:d=${END_CARD},apad,atrim=0:${r3(total)},asetpts=N/SR/TB[mix]`);
 
     steps.push({
       label: "Mix",
-      note: `${legs.length} tracks, loudness ${MUSIC_LUFS} LUFS score under a ${FINAL_LUFS} LUFS mix · replaces ${COMPOSE} + ${LOUDNORM} + ${MERGE_AV}`,
+      note: `${legs.length} tracks, loudness ${MUSIC_LUFS} LUFS score (fading out during end card) under a ${FINAL_LUFS} LUFS mix · replaces ${COMPOSE} + ${LOUDNORM} + ${MERGE_AV}`,
       command:
         `ffmpeg -y -hide_banner ${inputs.join(" ")} -filter_complex_script "build/mix.txt" ` +
         `-map 0:v -map "[mix]" -c:v copy -c:a aac -b:a 192k -movflags +faststart -t ${r3(total)} "clean.mp4"`,

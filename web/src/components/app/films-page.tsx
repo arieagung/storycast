@@ -7,7 +7,6 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/motion/tabs";
 import { cn } from "@/lib/utils";
 import { languageName, nativeLanguage, type CastMember, type Film } from "@/lib/api";
 import { SHARING, owned } from "@/lib/share";
-import { AgentPromptButton } from "@/components/app/agent-button";
 
 const LENGTHS: Record<string, [number, number]> = { any: [0, 1e9], short: [0, 90], medium: [90, 240], long: [240, 1e9] };
 const SORTS: Record<string, { label: string; fn: (a: Film, b: Film) => number }> = {
@@ -210,7 +209,6 @@ export function FilmsPage({ films: all, loading, cast = [] }: { films: Film[]; l
               <p className="text-xs uppercase tracking-wider text-muted-foreground">Explore</p>
               <h1 className="mt-1 text-4xl font-semibold tracking-tight md:text-5xl">Stories to watch</h1>
             </div>
-            <AgentPromptButton />
           </div>
           <Tabs value={f.source} onValueChange={(v) => set("source", v as Source)} variant="segment" className="mt-4">
             <TabsList>

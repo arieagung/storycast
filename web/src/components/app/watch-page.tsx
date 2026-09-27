@@ -2,7 +2,6 @@ import { motion } from "motion/react";
 import { ArrowLeft, Check, ChevronDown, Download, Eye, Film as FilmIcon, Flag, Languages, Link2, Share2, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { setAgentContext } from "@/lib/agent";
-import { AgentPromptButton } from "@/components/app/agent-button";
 import { FilmPlayer } from "@/components/app/film-player";
 import { fmtDuration } from "@/components/app/film-card";
 import { Art, Lightbox, downloadFile, type LightboxItem } from "@/components/app/lightbox";
@@ -224,7 +223,6 @@ export function WatchPage({ id, films, cast, loading }: { id: string; films: Fil
             <p className="mt-1 text-lg text-muted-foreground sm:text-xl">{film.subtitle}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <AgentPromptButton />
             {canShare && (
               <Button className="rounded-full" onClick={() => setShareOpen(true)}>
                 <Share2 className="size-4" /> {mineShared ? "Shared" : "Share"}

@@ -347,10 +347,10 @@ export async function agentBrief(ctx: AgentContext | null): Promise<string> {
     "",
     `1. Cut every shot to its slot: \`-t <slot> -vf "scale=${P.FRAME.width}:${P.FRAME.height}:force_original_aspect_ratio=increase,crop=${P.FRAME.width}:${P.FRAME.height},fps=${P.FPS}" -an\`.`,
     "   If a shot is shorter than its slot, hold its last frame (`tpad=stop_mode=clone:stop_duration=<missing>`) so the picture cannot drift away from the narration.",
-    `2. The end card: \`-loop 1 -i card.png -t ${P.END_CARD}\` with the same filter. Then join every cut and the card with the concat demuxer → picture.`,
+    `2. The end card: \`-loop 1 -i card.png -t ${P.END_CARD}\` with fade in & out transitions. Then join every cut and the card with the concat demuxer → picture.`,
     "3. The mix, one ffmpeg call over the picture plus every narration file plus the score:",
     "   - each block's narration `adelay=<start[b] in ms>:all=1`, including the talking blocks (the same file the lip-sync was made from, so it lands in sync);",
-    `   - the score \`loudnorm=I=${P.MUSIC_LUFS}:TP=-2\`;`,
+    `   - the score \`loudnorm=I=${P.MUSIC_LUFS}:TP=-2\` with \`afade=t=out\` fading out over the end card;`,
     `   - a shot's own sound only if you listened to it and it has no speech in it (the original used \`${P.SEPARATE}\` to strip speech out);`,
     `   - \`amix=inputs=N:duration=longest:normalize=0\`, then \`loudnorm=I=${P.FINAL_LUFS}:TP=-1.5\`, \`apad\`, \`atrim=0:<total>\` → the clean cut.`,
   );

@@ -5,7 +5,6 @@ import { Button } from "@/components/motion/button/base";
 import { Link, navigate } from "@/lib/router";
 import { Marquee } from "@/components/motion/marquee";
 import { TextReveal } from "@/components/motion/text-reveal";
-import { AgentPromptButton } from "@/components/app/agent-button";
 import { Art } from "@/components/app/lightbox";
 import { EASE_OUT } from "@/lib/ease";
 import type { CastMember, Film } from "@/lib/api";
@@ -105,14 +104,6 @@ export function Hero({ cast, films }: { cast: CastMember[]; films: Film[] }) {
             <Link to="/films" className="inline-flex h-12 items-center gap-2 rounded-full border border-border bg-background/70 px-6 text-sm backdrop-blur transition-colors hover:border-border-strong">
               Browse stories <ArrowRight className="size-4" />
             </Link>
-          </motion.div>
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.65, ease: EASE_OUT }}
-            className="pointer-events-auto mt-5 flex justify-center"
-          >
-            <AgentPromptButton />
           </motion.div>
         </div>
       </section>

@@ -58,6 +58,7 @@ export function aspectString(frame: FrameSize): string {
   return `${frame.width}:${frame.height}`;
 }
 export const [LEAD, GAP, TAIL_DUR, END_CARD, FPS] = [1.5, 0.35, 8.0, 4.0, 24];
+export const CARD_FADE = 0.75;
 export const [MUSIC_LUFS, FINAL_LUFS] = [-30, -16];
 export const [TALK_MIN, TALK_MAX] = [5.2, 14.6];
 export const PULL_BACK =
@@ -357,9 +358,10 @@ export function timeline(plan: Plan, specs: Spec[], veo = false): Timeline {
       dur: length[b.id],
       talking: b.kind === "T",
     }));
-    segments.push({ shot: plan.tail.shot, start: tailStart, dur: TAIL_DUR, talking: false });
-    const total = tailStart + TAIL_DUR + END_CARD;
-    return { starts, segments, pictureEnd: tailStart + TAIL_DUR, total };
+    const tailDur = specs.find((s) => s.shot === plan.tail.shot)?.clip?.duration || TAIL_DUR;
+    segments.push({ shot: plan.tail.shot, start: tailStart, dur: tailDur, talking: false });
+    const total = tailStart + tailDur + END_CARD;
+    return { starts, segments, pictureEnd: tailStart + tailDur, total };
   }
 
   // Standard Mode — LEAD + per-block GAP, V blocks stretch to fill the visual gap.
